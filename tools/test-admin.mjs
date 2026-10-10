@@ -1873,5 +1873,46 @@ console.log('\n[刷新与统计]');
     fsx.rmSync(dir, { recursive: true, force: true });
   }
 
+/* ── 上游分类：请求体太大不能当成"限流" ───────────────────────────── */
+//
+// `ModelArts.81113`（Invalid request body, exceeds the maximum size）带的是
+// **HTTP 429**，所以它一度落进了 `rateLimited` 那条正则里 —— 后果有两层：
+//   ① 反代拿同一个 5.5MB 的 body **原样重试满 3 遍**（每次都要把 5.5MB 再传一遍）；
+//   ② 错误原样透传成 429，客户端以为"只是忙"，于是继续重试同一个必然失败的请求。
+// 实测：塞一个约 5.5MB 的对话历史（7500 块）就会撞到它。
+//
+// 这是**确定性**失败：body 不变，打一百遍都一样。所以必须单独认出来 + 不重试 + 413。
+console.log('\n[上游分类：请求体太大 ≠ 限流]');
+{
+  const { classifyUpstream } = await import('../src/upstream.mjs');
+  const body = JSON.stringify({
+    error: { code: 'ModelArts.81113', message: 'Invalid request body, exceeds the maximum size' },
+  });
+  const info = classifyUpstream(429, body);
+  if (info.requestTooLarge) ok('ModelArts.81113 被认成"请求体太大"');
+  else bad('81113 没被认出来，会被当成限流重试', JSON.stringify({ code: info.code, rateLimited: info.rateLimited }));
+  if (!info.rateLimited) ok('81113 不再被当成限流（不然会白重试 3 遍 5.5MB）');
+  else bad('81113 仍然被当成限流');
+  if (info.retryable === false) ok('81113 标记为不可重试');
+  else bad('81113 还是可重试的', String(info.retryable));
+  if (!info.authFailed && !info.modelRejected) ok('81113 不会牵连账号（不冷却凭据）');
+  else bad('81113 被判成了账号问题');
+
+  // 反向对照：真正的限流还得照样认出来，别把这个修法做过头
+  for (const [code, msg] of [
+    ['ModelArts.81111', 'TPM limit exceeded'],
+    ['ModelArts.81114', 'too many requests'],
+    ['ModelArts.81112', 'rate limit'],
+  ]) {
+    const i2 = classifyUpstream(429, JSON.stringify({ error: { code, message: msg } }));
+    if (i2.rateLimited && i2.retryable && !i2.requestTooLarge) ok(`${code} 仍然按限流处理（可重试）`);
+    else bad(`${code} 被误伤成别的了`, JSON.stringify({ rateLimited: i2.rateLimited, tooLarge: i2.requestTooLarge }));
+  }
+  // 光有 429、没别的线索时，还得是限流
+  const bare = classifyUpstream(429, '{"error":{"message":"Too Many Requests"}}');
+  if (bare.rateLimited && !bare.requestTooLarge) ok('裸 429 仍然算限流');
+  else bad('裸 429 被误判', JSON.stringify({ r: bare.rateLimited, t: bare.requestTooLarge }));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

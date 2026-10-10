@@ -548,7 +548,15 @@ export function createApp(ctx) {
         handle.cleanup();
         const info = classifyUpstream(upstreamRes.status, text);
         lastError = info.message;
-        lastStatus = info.rateLimited ? 429 : info.authFailed ? 401 : info.badRequest ? 400 : 502;
+        lastStatus = info.requestTooLarge
+          ? 413
+          : info.rateLimited
+            ? 429
+            : info.authFailed
+              ? 401
+              : info.badRequest
+                ? 400
+                : 502;
         attempts.push({
           attempt: attemptNo,
           cred: cred.baseUrl,
@@ -582,6 +590,21 @@ export function createApp(ctx) {
         if (info.authFailed) {
           pool.markAuthFailed(cred, info.message);
           ctx.requestRediscover('auth_failed');
+        } else if (info.requestTooLarge) {
+          // 请求体太大是**确定性**的：body 不变，换个号、换个时间都一样被拒。
+          // 而且重试要把整个 body 再传一遍（实测那次 5.5MB），纯属烧带宽。
+          // 连"记一笔失败"都不做 —— 这不是凭据的错。
+          log.warn('请求超过上游上限（messages 条数太多），直接回给客户端，不再重试', {
+            model,
+            code: info.code,
+            message: info.message,
+          });
+          return openAiError(
+            `${info.message}（这个请求的对话历史太长了：上游对 messages 条数有上限` +
+              '（实测 5000 条，跟 token 数无关）。把历史清短一些 —— 是减少消息条数，' +
+              '光把每条改短没用 —— 再试。）',
+            { status: 413, type: 'invalid_request_error', code: 'request_too_large' },
+          );
         } else if (info.rateLimited) {
           pool.markRateLimited(cred, model, info.message);
         } else {
@@ -616,8 +639,20 @@ export function createApp(ctx) {
         handle.cleanup();
         const info = classifyUpstream(info_statusOf(primed.payload), JSON.stringify(primed.payload));
         lastError = info.message;
-        lastStatus = info.rateLimited ? 429 : 502;
+        // 请求体太大是确定性的，重试只会把整个 body 再传一遍（实测 5.5MB），
+        // 所以这一档也不重试 —— 状态码给 413，让客户端知道该清历史了。
+        lastStatus = info.requestTooLarge ? 413 : info.rateLimited ? 429 : 502;
         attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: info.code, error: info.message });
+        if (info.requestTooLarge) {
+          // 上游有时会用 HTTP 200 包着错误体回（这一段就是兜这种情况）。
+          // 请求体太大是确定性的，重试只会再传一遍整个 body。
+          log.warn('请求体超过上游上限（以 200 包错误体返回），不再重试', { model, code: info.code });
+          break;
+        }
+        if (info.badRequest) {
+          log.warn('上游明确拒绝这个请求，不再重试', { model, code: info.code, message: info.message });
+          break;
+        }
         if (info.rateLimited) pool.markRateLimited(cred, model, info.message);
         else pool.markFailed(cred, info.message);
         log.warn('上游以 200 返回错误体', { model, code: info.code, message: info.message });
@@ -858,14 +893,21 @@ export function createApp(ctx) {
       error: lastError || 'all attempts failed',
     });
 
-    const type = lastStatus === 429 ? 'rate_limit_error' : lastStatus === 401 ? 'authentication_error' : 'upstream_error';
+    const type =
+      lastStatus === 429 ? 'rate_limit_error'
+      : lastStatus === 401 ? 'authentication_error'
+      : lastStatus === 413 ? 'invalid_request_error'
+      : 'upstream_error';
     // 只打了一次的话就别写「已尝试 1 次」了 —— 那会让客户端以为还有别的原因，
     // 其实上游已经把话说得很清楚了。
     const tried = attempts.length > 1 ? `（已尝试 ${attempts.length} 次）` : '';
     const err = openAiError(`上游请求失败${tried}: ${lastError || '未知错误'}`, {
       status: lastStatus,
       type,
-      code: lastStatus === 400 ? 'invalid_request_error' : 'upstream_failed',
+      code:
+        lastStatus === 400 ? 'invalid_request_error'
+        : lastStatus === 413 ? 'request_too_large'
+        : 'upstream_failed',
     });
     err.body.attempts = attempts;
     return err;

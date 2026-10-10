@@ -183,9 +183,39 @@ export function classifyUpstream(status, text) {
   const code = String(errObj?.code || payload?.error_code || '').trim();
   const message = String(errObj?.message || payload?.error_msg || payload?.message || trimmed || `HTTP ${status}`).trim();
 
+  /**
+   * 上游说「你这次请求**太大了**」。
+   *
+   *   ModelArts.81113  Invalid request body, exceeds the maximum size
+   *
+   * ⚠️ 它带的是 **HTTP 429**，所以以前被下面那条 `status === 429` 吞成
+   * `rateLimited` —— 于是：
+   *   ① 反代拿同一个 5.5MB 的 body **原样重试 3 遍**（每次都会再传一遍 5.5MB），
+   *   ② 还把错误原样透传成 `429`。客户端看到 429 会认为"只是暂时忙"，
+   *      于是**继续重试同一个必然失败的请求**。
+   *
+   * 实际上这是**确定性**的：请求不变，打一百遍一样被拒。
+   * 所以必须单独识别出来，走"不重试 + 换个合适的状态码"这条路。
+   *
+   * ⚠️ 别把它读成"上下文太长（token 超窗口）"—— 上游原文其实自报了家门：
+   *   Invalid request body, exceeds the maximum size , messages max size is: 5000.
+   * 说的是 **messages 条数上限 5000 条**，跟 token 数无关：
+   * 3000 条长消息能过，4990 条 "a1"/"b" 这样的短消息反而更容易撞。
+   * token 窗口超了回的是**另一套错**，两者别混。
+   * （是否另有一条"请求体字节数"上限尚未证实 —— 见 tools/diag-upstream-limits.mjs，
+   *  它在"条数没超 5000 却仍回 81113"时会把这一点标出来。）
+   *
+   * 实测：塞约 5.5MB 的对话历史（7500 块 = 15000 条）就会撞到它。
+   */
+  const requestTooLarge =
+    /81113|exceeds the maximum size|RequestEntityTooLarge|payload too large|request body is too (large|long)/i.test(
+      `${code} ${message}`,
+    );
+
   const rateLimited =
-    status === 429 ||
-    /81111|81112|81113|81114|0308|TooManyRequests|rate limit|too many requests|\bTPM\b/i.test(`${code} ${message}`);
+    !requestTooLarge &&
+    (status === 429 ||
+      /81111|81112|81114|0308|TooManyRequests|rate limit|too many requests|\bTPM\b/i.test(`${code} ${message}`));
 
   /**
    * 上游说「这个**模型**不行」——分两种，都是**请求级**问题，不是账号的问题：
@@ -222,11 +252,15 @@ export function classifyUpstream(status, text) {
     message,
     payload,
     rateLimited,
+    requestTooLarge,
     authFailed,
     modelRejected,
     badRequest,
     unsupportedParam,
-    retryable: rateLimited || authFailed || status >= 500,
+    // 请求体太大是**确定性**失败：body 不变，打一百遍一样被拒，
+    // 而且每遍都要把整个 body 再传一次（实测撞到的那次是 5.5MB）。
+    // 所以明确排除在可重试之外。
+    retryable: !requestTooLarge && (rateLimited || authFailed || status >= 500),
     httpStatus: status,
   };
 }
