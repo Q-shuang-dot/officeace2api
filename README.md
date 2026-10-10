@@ -240,11 +240,13 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
-- `node tools/test-admin.mjs` —— 控制台接口自测（215 项）
+- `node tools/test-admin.mjs` —— 控制台接口自测（223 项）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（47 项）
 - `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（41 项）
 - `node tools/stress-deep41.mjs` —— 大批量压测：长会话 / 长上下文 / 高并发 / 全模型混打（会真花额度，`--all` 拉满）
 - `node tools/diag-empty-window.mjs` —— 撞「推理吃光预算、正文为空」那个窗口
+- `node tools/diag-upstream-limits.mjs` —— 摸上游的两条上限：messages 5000 条 / token 窗口
+- `node tools/diag-body-too-large.mjs` —— 超大请求体应该回 413 而不是 429
 
 ---
 
