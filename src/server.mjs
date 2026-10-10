@@ -646,7 +646,7 @@ export function createApp(ctx) {
         if (info.requestTooLarge) {
           // 上游有时会用 HTTP 200 包着错误体回（这一段就是兜这种情况）。
           // 请求体太大是确定性的，重试只会再传一遍整个 body。
-          log.warn('请求体超过上游上限（以 200 包错误体返回），不再重试', { model, code: info.code });
+          log.warn('请求超过上游上限（以 200 包错误体返回），不再重试', { model, code: info.code });
           break;
         }
         if (info.badRequest) {
