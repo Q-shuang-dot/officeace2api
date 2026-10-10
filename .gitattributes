@@ -1,0 +1,14 @@
+# 统一换行符：仓库里一律存 LF，Windows 批处理签出成 CRLF（cmd.exe 对 LF 的 goto/label 不保险）
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制：别让 git 去猜
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.exe binary

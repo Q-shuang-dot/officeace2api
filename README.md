@@ -1,0 +1,1653 @@
+# officeace2api
+
+把本机 **OfficeAce（果办 / Office Claw）** 桌面端的模型网关，反代成一套标准的 **OpenAI 兼容 API**，
+任何支持自定义 BaseURL 的客户端（Cherry Studio、NextChat、LobeChat、Cline、Roo Code、Continue、
+Cursor、Dify、OpenAI SDK…）都能直接接进来用。
+
+- **零依赖**：只用 Node.js 内置模块，不用 `npm install`
+- **零配置起步**：自动从本机已登录的 OfficeAce 客户端里找到上游地址和鉴权凭据
+- **32 个模型**：GLM-5.3 / GLM-5.2 / DeepSeek-V4.1-Flash / DeepSeek-V4-Pro / Kimi-K2.6 / Qwen3 / openPangu 全系
+- **完整协议**：流式 SSE 透传、非流式聚合、Function Calling（工具调用）、reasoning_content 推理内容、usage 统计
+- **带控制台**：浅色系后台，7 个菜单装完 12 块内容；看凭据状态、模型清单、一键试模型、实时日志
+- **号池 + 积分额度**：多账号聚合、一键授权、批量注册；每个号**还剩多少积分**直接问华为云拿，一眼看懂
+- **不用管它**：临时凭据到期自动续期、每天自动签到领积分、进程死了 4 秒内自己爬起来
+
+---
+
+## 一、原理（它到底"反代"了什么）
+
+OfficeAce 桌面端的模型能力由内置的 `relayclaw` 运行时（jiuwenswarm Agent）提供。这个运行时启动时，
+桌面端会把**真实的上游模型网关地址 + 鉴权头**同步到本机磁盘：
+
+```
+~/.office-claw/.jiuwenclaw/config/routing_state/users/<账号ID>/models.json
+```
+
+文件里每一条模型配置长这样（真实内容）：
+
+```json
+{
+  "model_client_config": {
+    "api_base": "https://modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com/v2",
+    "api_key": "huawei-maas-session",
+    "model_name": "deepseek-v4.1-flash",
+    "client_provider": "OpenAI",
+    "custom_headers": {
+      "Authorization": "Basic <AK>:<SK>"
+    }
+  },
+  "model_provider": "huawei_maas"
+}
+```
+
+也就是说：**上游本身就是 OpenAI 兼容协议**（华为 AgentArts 模型网关，APIG 签名走 Basic AK/SK），
+只是藏在桌面的本地文件里。`officeace2api` 做的就是：
+
+```
+任意 OpenAI 客户端 ──▶ officeace2api（本机 127.0.0.1:7864）
+                          │  1. 自动读取 models.json 里的 api_base + Authorization
+                          │  2. 请求体净化 / 重试 / 限流冷却 / 凭据轮换
+                          ▼
+                     https://modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com/v2
+```
+
+因为凭据是"读本机文件"而不是"中间人抓包"，所以**不需要装证书、不受 HTTPS 证书固定影响**，
+OfficeAce 客户端升级只要它还在用同一套机制就照旧可用；凭据被刷新时本服务也会自动重载。
+
+---
+
+## 二、快速开始
+
+### 1. 前置
+
+- 本机已安装并**成功登录**过 OfficeAce 桌面端，且**至少发起过一次对话**
+  （这样 `models.json` 才会被写出来）
+- Node.js ≥ 20 —— **通常不用自己装**：启动脚本会自动去找 OfficeAce 自带的
+  `node.exe`（`<OfficeAce安装目录>\tools\node\node.exe`，版本 22+）。
+  找不到时按顺序回退：`data\node.txt` → PATH 上的 node → OfficeAce 目录 → `Program Files`。
+  注意 PATH 上是老版本 Node（14/16）时会被自动跳过，脚本只认 ≥ 20 的。
+
+### 2. 以服务方式安装（推荐，开机自启）
+
+双击 **`install-autostart.cmd`**：它会把程序注册成 Windows 计划任务 `officeace2api`，
+由系统的任务计划服务托管进程。好处是**不依赖任何命令行窗口**，关掉窗口、注销、重启都不会掉，
+并且每次登录自动拉起。
+
+```
+[i] node : D:\软件\OfficeAce\tools\node\node.exe  (v22.22.2)
+[OK] scheduled task 'officeace2api' installed
+[OK] will start automatically at every logon
+[OK] running: http://127.0.0.1:7864/healthz
+```
+
+不需要自启了就双击 `remove-autostart.cmd` 卸载。
+
+### 3. 手动启动（临时用）
+
+双击 `start.cmd`：如果计划任务已安装就调它启动，没安装就直接后台拉起进程。
+
+```
+[OK] service is up
+
+  OpenAI base : http://127.0.0.1:7864/v1
+  Admin panel : http://127.0.0.1:7864/admin
+  API key     : sk-officeace
+  Log file    : logs\server.log
+```
+
+> ⚠️ **别在命令行窗口里直接 `node src/index.mjs` 之后就关窗口** —— 窗口一关进程就跟着死，
+> 浏览器打开会看到 `ERR_CONNECTION_REFUSED`。要么双击 `start.cmd`（内部做了分离），
+> 要么用 `install-autostart.cmd` 交给任务计划服务。
+
+### 4. 接入客户端
+
+| 项目 | 填什么 |
+| --- | --- |
+| Base URL / 接口地址 | `http://127.0.0.1:7864/v1` |
+| API Key | `sk-officeace`（在 `config.json` 的 `apiKeys` 里改） |
+| Model | 见 `/v1/models`，推荐 `glm-5.2` / `deepseek-v4-flash-0731` |
+
+> 有些客户端要求 BaseURL 不带 `/v1`（例如 Cline 填 `http://127.0.0.1:7864`），
+> 两种都能用，本服务的路由是 `/v1/...`，客户端会自动补。
+
+### 5. 验证
+
+```bash
+# 列模型
+curl http://127.0.0.1:7864/v1/models -H "Authorization: Bearer sk-officeace"
+
+# 非流式
+curl http://127.0.0.1:7864/v1/chat/completions \
+  -H "Authorization: Bearer sk-officeace" -H "Content-Type: application/json" \
+  -d '{"model":"glm-5.2","messages":[{"role":"user","content":"你好"}]}'
+
+# 流式
+curl -N http://127.0.0.1:7864/v1/chat/completions \
+  -H "Authorization: Bearer sk-officeace" -H "Content-Type: application/json" \
+  -d '{"model":"deepseek-v4-flash-0731","messages":[{"role":"user","content":"数到5"}],"stream":true}'
+```
+
+项目自带自测脚本：`node tools/smoke-test.mjs`（自动跑一遍非流式 + 流式）。
+
+---
+
+## 三、可用模型（33 个）
+
+> ⚠️ 这 33 个是**上游网关的目录**，不等于"每个都打得通"。
+> 实测两个号的时候只有 9 个真的能用，其余上游回 `81004`（没权限）或 `81009`（名字不认）。
+> 那部分模型**仍然列在 `/v1/models` 里**（客户端配置不用改），但打过去会立刻收到 400，
+> 面板「模型管理」上也会把它们的名字列出来。详见「七之三之二 · 坑三」。
+
+| 模型 ID | 厂商 | 说明 |
+| --- | --- | --- |
+| `glm-5.3` `glm-5.3-test` `glm-5.3-zx` | Zhipu AI | 198K 上下文，推理 + 工具调用 |
+| `glm-5.2` `glm-5.2-a3` `glm-5.2-zx` `glm-5.2-test` `glm-5.2-exercise` `glm-5.2-harmony` | Zhipu AI | 默认模型，198K |
+| `glm-5.1` `glm-5.1-test` `glm-5.1-exercise` | Zhipu AI | 198K |
+| `glm-5-test` `glm.5.2-arkts-spark` | Zhipu AI | 灰度通道 |
+| `deepseek-v4.1-flash` `deepseek-v4.1-flash-0930` | DeepSeek | 1M 上下文，热门，容易限流 |
+| `deepseek-v4-pro` `deepseek-v4-flash` `deepseek-v4-flash-0731` `deepseek-v4-flash-A3` | DeepSeek | 1M |
+| `deepseek-v3.2` `deepseek-v3-test` `deepseek-r1-250528` | DeepSeek | 128K |
+| `Kimi-K2.6` `kimi-k2.6` | Moonshot | 256K |
+| `qwen3-32b` `qwen3-30b-a3b` | Alibaba | 128K |
+| `openpangu-2.0-pro` `openpangu-2.0-pro-test` `openpangu-2.0-flash` `openpangu-2.0-flash-test` | Huawei | 128K |
+| `longcat-flash-chat-test` | — | 灰度通道 |
+
+带 `-test` / `-exercise` 后缀的是上游灰度/演练通道，可用性会波动；
+`glm-5.3` 系列**不支持** `thinking:{"type":"disabled"}` 这个参数（本代理会自动剥离后重试）。
+
+---
+
+## 四、目录结构
+
+```
+officeace2api/
+├── install-autostart.cmd  注册成 Windows 计划任务（开机自启，推荐）
+├── remove-autostart.cmd   卸载计划任务
+├── start.cmd              启动（已安装计划任务时走计划任务）
+├── stop.cmd               停止
+├── status.cmd             任务状态 + 健康检查 + 模型列表
+├── run-foreground.cmd     前台运行（看实时日志）
+├── run-bg.cmd             后台运行实体（被计划任务/start.cmd 调用）
+├── config.json            配置
+├── package.json
+├── src/
+│   ├── index.mjs          入口：装配、周期刷新、优雅退出
+│   ├── config.mjs         配置加载 + 环境变量覆盖
+│   ├── discover.mjs       ★ 从本机 OfficeAce 文件里发现凭据与模型目录
+│   ├── pool.mjs           凭据池：轮询 / 冷却 / 失效回收
+│   ├── upstream.mjs       请求构造 / SSE 解析 / 聚合 / 错误分类
+│   ├── models.mjs         模型注册表（合并本机目录 + 上游列表 + 别名）
+│   ├── server.mjs         HTTP 路由 + 重试编排
+│   ├── stats.mjs          用量统计（落盘 data/usage.json）
+│   ├── accounts.mjs       ★ 号池：多账号聚合 + OAuth 档案解密 + 启停
+│   ├── quota.mjs          ★ 积分额度：V4/V11 华为签名 + 订阅/用量/费率解析 + 签到
+│   ├── refresh.mjs        ★ 凭据自动续期：DPoP proof 签名 + refresh_token 轮换链
+│   ├── oauth.mjs          ★ 自助登录：自己跑完 OAuth（PKCE + 轮询取码 + 换令牌 + 开通）
+│   ├── authflow.mjs       ★ 一键授权：驱动本机 OfficeAce 的登录链路（要桌面端在跑）
+│   ├── gatewayKey.mjs     ★ 补网关凭据：把「有档案、没 MaaS key」的号修好（见「七之三之二」）
+│   ├── register.mjs       ★ 批量注册 / 开通：队列 + 状态机 + 可插拔接码
+│   ├── dpapi.mjs          Windows DPAPI 解密（读安装密钥）
+│   ├── http.mjs           极简 HTTP 客户端（能跳过自签证书校验）
+│   ├── admin.html         ★ 控制台页面（单文件，改完刷新即生效）
+│   ├── admin.mjs          页面加载 + 管理接口挂载
+│   ├── logger.mjs         带环形缓冲 + 落盘的日志
+│   ├── fingerprint.mjs    凭据指纹
+│   └── util.mjs
+├── tools/
+│   ├── service.ps1        计划任务安装/卸载/启停/状态/日志（核心）
+│   ├── watchdog.ps1       ★ 守护进程：服务死了自动拉起（计划任务真正的载荷）
+│   ├── screenshot.ps1     给控制台截图（无头 Chrome，**不碰你正在用的浏览器**）
+│   ├── find-node.cmd      挑一个 Node.js ≥ 20（老版本会被跳过）
+│   ├── dump-cred.mjs      排障：打印发现到的凭据/模型
+│   ├── list-models.mjs    排障：打印服务暴露的模型
+│   ├── smoke-test.mjs     端到端自测
+│   ├── test-admin.mjs     控制台接口自测（197 项，含签名/解析/续期/签到/熔断/号池删除与恢复/已删账号凭据隔离/登录撤销忽略名单/健康度文案/面板结构/自助登录/面板助手/倍率匹配/换账号链接/两个模式不串/上游报「模型不行」≠账号不行/幽灵账号 ID）
+│   ├── test-refresh-chain.mjs  续期 token 链回归（19 项，假 STS 连跑 30 次轮换 + 老实现对照）
+│   ├── test-rearm-chain.mjs    续期链断链自愈回归（36 项，假 STS 跑「烧穿 → 上膛 → 三轮回写 → 再烧穿 → 再上膛」+ 服务器原样回同一份 token）
+│   ├── verify-oauth.mjs   排障：验证「凭据 → 网关连接」那段，会真打一次上游
+│   ├── probe-permission.mjs 排障：打印云端开通接口返回的 modelInfo
+│   ├── probe-rearm-live.mjs 排障：把「重新上膛」那条路完整重放一遍（会真打一次 STS）
+│   ├── probe-login-recovery.mjs 排障：用真档案模拟「重新登录之后会自动接上」（不联网、不改数据）
+│   ├── probe-lifetime.mjs 排障：量一下临时 AK/SK 的真实寿命、算出下一次自动续期的触发点
+│   ├── probe-rate-match.mjs 排障：核对「使用倍率」的匹配规则（含跨代不许蹭的硬校验）
+│   ├── probe-auth-switch.mjs 排障：验证「登出→再授权」确实会走到登录页（换账号的基础）
+│   ├── probe-second-account.mjs 排障：多账号体检——号池状态、每号凭据数、控制面原始响应
+│   ├── probe-backfill-cred.mjs 排障：给「没有网关凭据」的号补 key，并真打一发上游验证确实能用
+│   └── normalize-cmd.ps1  把 .cmd 规范化成 ASCII+CRLF（改完批处理跑一下）
+├── docs/                  控制台截图（README 配图，由 screenshot.ps1 生成）
+├── data/                  usage.json、accounts.json、quota-history.json、
+│                          refresh-state.json（轮换后的 refresh_token，已锁权限）、
+│                          login-sessions.json（进行中的登录，已锁权限）、
+│                          oauth-accounts.json（自助登录的号，已锁权限）、
+│                          bonus-claims.json（签到记录）、server.pid、instance.lock（单实例锁）、node.txt（自动生成）
+└── logs/                  server.log、server.err.log、watchdog.log（自动生成）
+```
+
+> [!IMPORTANT]
+> **Windows 上 `mode: 0o600` 是没用的。** Node 的 `fs.writeFileSync(..., { mode: 0o600 })`
+> 在 Windows 上只会映射「只读位」，权限其实是继承自父目录的。实测 `data\refresh-state.json`
+> 的 ACL 曾经是 `Authenticated Users:(I)(M)` + `Users:(I)(RX)` —— 也就是同机任何用户都能读到
+> 里面的**明文** `refresh_token`、`secretAccessKey`、`securityToken`，还有 `oauth-accounts.json`
+> 里自助登录的 DPoP 私钥。
+>
+> 现在 `src/util.mjs` 的 `writeFileSecure()` 在写完之后会额外跑一次
+> `icacls <file> /inheritance:r /grant:r "<用户>:F"`，把继承关系摘掉、只授权当前用户。
+> 所有落盘点（`refresh.mjs` 的 `save()`、`oauth.mjs` 的两处 `save()`）都走它。
+> 顺带这个函数是**原子写**（临时文件 + fsync + rename），所以续期状态不会再出现
+> 「写到一半被杀 → 文件半截 → 下次读取按空处理 → 整份状态被覆盖掉」这种数据损失。
+
+> [!IMPORTANT]
+> **改 `tools/*.ps1` 时的编码坑。** PowerShell 5.1 读**没有 BOM** 的 `.ps1` 时用的是系统
+> ANSI 代码页（中文机器上是 GBK），文件里的 UTF-8 中文会被解码成乱码，严重时里面的引号会让
+> 语法直接崩掉（表现为一堆 "Array index expression is missing"）。二选一：
+> - 脚本**全 ASCII**（`service.ps1` / `watchdog.ps1` / `normalize-cmd.ps1` 走这条），或
+> - 存成 **UTF-8 with BOM**（`screenshot.ps1` 走这条，因为它要输出中文提示）。
+>
+> `tools/test-admin.mjs` 里的面板结构测试会顺带盯着配色残留，但**不会**检查 `.ps1` 编码，
+> 所以手动存文件时自己留意。核对命令：
+> ```powershell
+> $b=[IO.File]::ReadAllBytes("tools\你的脚本.ps1"); ($b[0..2]|%{$_.ToString('X2')}) -join ' '
+> # EF BB BF = 有 BOM；否则必须确认文件里没有非 ASCII 字节
+> ```
+
+---
+
+## 五、接口一览
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/v1/models` | 模型列表（OpenAI 格式）。默认**不列出**「一条凭据都用不了」的模型；被藏掉的名字在 `x_hidden_unavailable` 里 |
+| GET | `/v1/models/{id}` | 单个模型（这里**不过滤**，被藏掉的也查得到，方便排障） |
+| POST | `/v1/chat/completions` | 对话（`stream` 支持流式/非流式） |
+| POST | `/v1/completions` | 文本补全（内部转成 chat） |
+| POST | `/v1/embeddings` | 转发给上游（上游是否支持取决于网关） |
+| GET | `/v1/usage` | 用量统计 |
+| POST | `/v1/refresh` | 立即重新发现凭据 + 刷新上游模型列表 |
+| GET | `/healthz` | 健康检查（`credentials` / `accountsUsable` / `creditsRemainingEnabled` / `modelsUnavailable` 各自口径见「七之三之二 · 坑四」） |
+| GET | `/admin` | 控制台页面（`/` 同） |
+| — | `/admin/api/*` | 面板接口，见「七、控制台」 |
+
+鉴权：请求头 `Authorization: Bearer sk-officeace` 或 `x-api-key: sk-officeace`。
+把 `config.json` 的 `apiKeys` 设为 `[]` 即关闭本地校验（仅建议纯本机使用时）。
+
+### 特性
+
+- **SSE 透传**：上游帧原样转发（含 `reasoning_content`、`tool_calls` 增量、`usage` 尾帧），零加工
+- **伪 200 错误识别**：华为网关限流时会用 HTTP 200 + `data:{"error":...}` 返回，本服务会预读首帧，
+  把它还原成真正的 429 并触发重试，而不是把你的客户端搞成"空回复"
+- **非流式聚合**：客户端要非流式时，仍然用上游流式接口取数（TTFB 更好），在本地拼成完整
+  `chat.completion`，`tool_calls` 的 `arguments` 分片会被正确拼接
+- **自动剥离不支持参数**：如 `glm-5.3` 不接受 `thinking:{"type":"disabled"}`，收到 400 后自动去参重试
+- **限流冷却**：`81111/81114` 只冷却"该凭据 + 该模型"，其它模型不受影响；`APIG.1009` 冷却整条凭据
+- **模型级拒绝不牵连整条凭据**：上游回 `81004`（没权限）/ `81009`（名字不认）时只给这一对组合 60 秒冷却，
+  整条凭据一点都不动；池里每个号都拒过的模型会直接回 `400 model_not_available`，不再白等 3 次重试
+- **凭据热重载**：桌面端刷新凭据后写回 `models.json`，本服务默认 45s 扫一次并自动替换
+- **自助登录导入**：不用装也不用开 OfficeAce 桌面端，自己跑完华为 OAuth
+  （PKCE + 轮询云端取授权码），点一下 → 新页面登录 → 账号自动进池并自动续期
+
+---
+
+## 六、配置说明（config.json）
+
+```jsonc
+{
+  "listen": { "host": "127.0.0.1", "port": 7864 },   // 想给局域网用改成 "0.0.0.0"
+  "apiKeys": ["sk-officeace"],                        // [] = 不校验
+
+  "upstream": {
+    "autoDiscover": true,          // 是否自动读本机 OfficeAce 凭据
+    "refreshSeconds": 45,          // 凭据/模型刷新间隔
+    "baseUrl": "",                 // 手工指定上游（留空=只用自动发现）
+    "authorization": "",           // 手工指定鉴权头，例：Basic xxxx
+    "extraHeaders": {},            // 额外请求头
+    "includeUsage": true,          // 请求上游带 stream_options.include_usage
+    "timeoutSeconds": 600,         // 单次上游超时
+    "maxRetries": 3,               // 最多尝试次数
+    "retryBackoffMs": 1200         // 重试基础退避
+  },
+
+  "discover": {
+    "installDirs": ["D:\\软件\\OfficeAce"]   // 便携版安装目录（会自动扫 ~/.office-claw）
+  },
+
+  "models": {
+    "alias": { "gpt-4o": "glm-5.2" },   // 别名：客户端要 gpt-4o，实际打 glm-5.2
+    "hidden": ["glm-5-test"],           // 从模型列表里隐藏
+    "extra": []                          // 手动补模型 ID
+  },
+
+  "quota": {
+    "cooldownOnRateLimitMs": 20000,      // 限流冷却
+    "cooldownOnAuthErrorMs": 300000,     // 鉴权失败冷却
+    "credentialPerModelCooldown": true   // 冷却粒度：凭据×模型（false=整条凭据）
+  },
+
+  "log": { "level": "info", "keepRecent": 300 },
+  "admin": { "enabled": true, "token": "" },   // 给 /admin 加访问口令
+
+  "models": {
+    "hideUnavailable": true        // /v1/models 不列「一条凭据都用不了」的模型；面板仍显示全量并标出它们
+  },
+
+  "accounts": {                    // 号池
+    "enabled": true,
+    "rescanSeconds": 60,
+    "onlyEnabled": true            // 只把「已启用」账号的凭据喂给连接池
+  },
+  "auth": {                        // 一键授权
+    "appApis": [],                 // 留空 = 用内置候选（https://127.0.0.1:3004 等）
+    "pollSeconds": 3,
+    "stateTtlMinutes": 10
+  },
+  "register": {                    // 批量注册
+    "enabled": true,
+    "registerUrl": "https://reg.huaweicloud.com/registerui/register.html",
+    "concurrency": 1,
+    "maxAttempts": 3,
+    "autoAuth": true,
+    "tickSeconds": 5,
+    "sms": { "provider": "manual" },
+    "activation": { "autoActivate": true, "promotionCodes": [], "waitBeforeAuthMs": 8000 }
+  }
+}
+```
+
+环境变量也能覆盖：`OFFICEACE2API_PORT` / `OFFICEACE2API_HOST` / `OFFICEACE2API_KEYS` /
+`OFFICEACE2API_BASE_URL` / `OFFICEACE2API_AUTHORIZATION` / `OFFICEACE_MODELS_JSON`。
+
+**换模型名的小技巧**：想让 Cline/Cursor 之类的客户端用 `gpt-4o` 这种名字，
+就在 `models.alias` 里加映射，客户端只认它认识的名字，实际请求打到你要的真实模型。
+
+---
+
+## 七、控制台（后台管理页面）
+
+浏览器打开 **`http://127.0.0.1:7864/admin`**（根路径 `/` 也会进到这里）。
+
+页面本身是 `src/admin.html` 单文件，无任何前端依赖，改完刷新浏览器即可生效，**不用重启服务**。
+
+不想记地址就双击根目录的 **`open-panel.cmd`**：会自动检测服务是否在跑，没跑就拉起来，然后打开浏览器。
+
+### 外观
+
+**浅色系**，灰底 + 白卡片分层，单一靛蓝只用于可交互元素，语义色（绿 / 黄 / 红）只用来表示状态。
+所有观测值走等宽字体 + `tabular-nums` 对齐，数字列不会跳动。
+
+配色是一套 CSS 令牌（`--bg / --panel / --line / --ink / --accent / --ok / --warn / --err` …），
+改主题只需要动 `<style>` 开头那一段，不用翻整页。**没有一处硬编码颜色**——
+`tools/test-admin.mjs` 里有一条测试专门盯着这点，深色主题的残留色值一旦漏回来就会报错。
+
+### 账号池
+
+![账号池](docs/panel-accounts.png)
+
+### 导入账号
+
+点右上角「导入账号」弹出的就是这个。点「开始登录」→ 拿到授权链接并**自动打开新标签页**
+→ 在那个页面登录华为账号 → 这边一直轮询云端，登录完账号自己就进池了。
+
+![导入账号](docs/panel-import.png)
+
+### 积分构成
+
+![积分构成](docs/panel-credits.png)
+
+### 用量
+
+![用量](docs/panel-usage.png)
+
+### 模型与档位
+
+![模型与档位](docs/panel-models.png)
+
+#### 「使用倍率」这一列是什么
+
+就是官方客户端模型列表右边那个 `0.30x` —— **用来算积分消耗的系数，越小越省**。
+数据源是控制面的 `GET {网关}/v1/model-token-rates`，字段 `cost_coefficient`：
+
+```
+model                  cost_coefficient  prompt_tokens_per_point  completion_tokens_per_point
+glm-5.2                0.70              4375                     1250
+glm-5.1                0.67              4375                     1250
+glm-5                  0.50              4375                     1250
+deepseek-v3.2          0.30              4375                     1250
+deepseek-v4-flash-0731 0.30              4375                     1250
+deepseek-v4.1-flash    0.30              4375                     1250
+```
+
+那个接口要签名（临时 AK/SK），浏览器不能直连，所以走 `/admin/api/model-rates` 代理一发。
+平时**不用额外请求**：积分刷新时已经把 `rates` 顺手带回来了（TTL 5 分钟），
+点面板上的「刷新倍率」就是「现在就要看」的意思。
+
+#### 为什么 33 个模型只有一部分有倍率
+
+倍率表里只有**已经发布定价的基座模型**。网关的模型列表却是「全量目录 + 各种变体」
+（`glm-5.2-a3`、`glm-5.2-test`、`glm-5.2-exercise`…），这些变体不单独发倍率。
+
+所以匹配分四级，**越往后越保守**：
+
+| 级别 | 规则 | 例子 | 显示 |
+|---|---|---|---|
+| ① | 精确命中 | `glm-5.2` | `0.70x` |
+| ② | 紧接 `-` / `_` 分隔符 | `glm-5.2-a3` ← `glm-5.2` | `0.70x*` |
+| ③ | 异体分隔符（`.` / `_` 当 `-` 用） | `glm.5.2-arkts-spark` ← `glm-5.2` | `0.70x*` |
+| ④ | 我们短、表里长 | `glm-5` ← `glm-5.3-zx` | `0.70x*` |
+
+带 `*` 的就是「借基座倍率」，悬停会说明借自谁；借不到就显示 `-`（未发布），
+**不是** 0。
+
+> **③ 判定边界时必须回原字符串看那一位。** 归一化会把 `.` 变成 `-`，于是
+> `glm-5.3` 也满足「`glm-5` 后面跟 `-`」——但 `glm-5.3` 是**新一代**，
+> 名字里的点是版本号不是分隔符写错，算钱未必一样。宁可留「-」，
+> 也不能显示一个看起来合理但是错的数字。这条有反向对照测试兜着：
+> 把判定改回看归一化串，测试必须复现出跨代误蹭。
+
+核对脚本：
+
+```powershell
+node tools\probe-rate-match.mjs
+```
+
+它会拉真实模型 ID 逐个打印匹配结果，末尾硬校验 `glm-5.3` 系列没有被 `glm-5` 蹭走：
+
+```
+  合计：5 精确 / 11 借用 / 17 未发布  （共 33 个）
+  ✓ 没有跨代误蹭（glm-5.3 系列没有被 glm-5 蹭走）
+```
+
+### 接入信息
+
+![接入信息](docs/panel-access.png)
+
+### 七个菜单
+
+页面按「你实际要看什么」合并过。**菜单 7 项，装 12 块内容**——一个菜单里可以叠好几块，
+第二块起标题自动降级成小节样式，不会出现两个并列大标题。
+
+| 菜单 | 装了哪几块 | 内容 |
+| --- | --- | --- |
+| **账号池** | 账号池 + 凭据池 | 账号：别名 / 华为账号名 / 健康度 / **剩余积分 + 用量进度条** / **凭据剩余时长** / 凭据与模型数 / AK 指纹 / 来源；测活、改名、启停、删除、**导入账号（自助登录）**。凭据：上游地址、AK/SK 掩码、来源文件、成功失败次数、冷却剩余 |
+| **用量** | 用量统计 + 调用记录 | 总量卡片 + 按模型（条形占比、平均延迟）+ 按 API Key；最近 200 条调用记录，可按成功 / 失败过滤，含端点、耗时、tokens、上游凭据、错误原因 |
+| **积分构成** | 积分构成 | 每个号还剩多少积分，用大字卡片摊开：总额 / 已用 / 剩余、套餐剩余 vs 奖励剩余、有效期倒计时、联网搜索次数、奖励明细、近 30 天消耗走势、**「按此速度还能用多少天」**、模型积分费率表、每日签到表、「续期凭据」与「一键签到」按钮 |
+| **模型与档位** | 模型管理 + 对话测试台 | 32 个模型的厂商、上下文、能力标签、来源，每行一个「测试」按钮；别名映射（客户端要 `gpt-4o`、实际打 `glm-5.2`）。测试台：选模型直接发消息，流式逐字显示，实时给出首字延迟 / 总耗时 / 输出字数 / tokens，可中断 |
+| **接入信息** | 接入信息 + 概览 | Base URL、API Key、默认模型；一键复制 JSON / `.env` / curl / 模型清单；Cherry Studio、NextChat、LobeChat、Cline、Continue、Dify、沉浸式翻译 等客户端填写对照表；在线增删 API Key。概览：凭据 / 模型 / 请求数 / 成功率 / token 统计 + 快捷操作 + 上游连接详情 |
+| **运行日志** | 运行日志 | 应用自己写盘的实时日志，级别过滤 + 关键字搜索 + 自动刷新开关 |
+| **配置** | 设置 + 授权 / 注册 | 设置：在线改 `config.json`（监听地址 / 端口 / API Key / 面板口令 / 超时重试 / 刷新间隔 / 冷却策略 / 日志级别）。授权：**一键授权**（唤起本机 OfficeAce 的华为登录，完成自动入池）+ **批量注册队列** |
+
+> **老链接不会失效。** `#overview`、`#creds`、`#play`、`#calls`、`#auth` 这些合并前的片段
+> 会被反查表映射回对应的菜单，收藏夹和 README 里的旧地址照样能打开。
+>
+> 另外 `#import` 是深链接，会**直接打开导入账号弹窗**（`http://127.0.0.1:7864/admin#import`）。
+
+侧边栏底部常驻一行状态：`● 剩 6,499 积分 · up 118s`——不用进任何页面就能瞄到余额。
+
+### 面板用到的接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/admin/api/state` | 面板全量状态（健康、配置、凭据、模型、用量、日志、号池、授权、注册） |
+| POST | `/admin/api/config` | 保存配置，返回 `restartRequired` 列表 |
+| POST | `/admin/api/models` | 保存别名 / 隐藏 / 附加模型，热更新到注册表 |
+| GET | `/admin/api/model-rates` | 每个模型的使用倍率（代控制面 `GET {网关}/v1/model-token-rates`，需要签名所以不能浏览器直连） |
+| POST | `/admin/api/refresh` | 重新发现凭据 + 刷新上游模型 |
+| POST | `/admin/api/usage/reset` | 清空统计 |
+| POST | `/admin/api/logs/clear` | 清空内存日志环 |
+| GET | `/admin/api/accounts` | 号池全量（账号 + 状态统计） |
+| POST | `/admin/api/accounts/scan` | 重新扫描磁盘上的账号 |
+| POST | `/admin/api/accounts/label` | 改别名 |
+| POST | `/admin/api/accounts/enable` | 启用 / 停用（立刻联动连接池） |
+| POST | `/admin/api/accounts/import` | 手工导入（`baseUrl` + `Authorization`） |
+| POST | `/admin/api/accounts/remove` | 移除（本机发现的只能停用） |
+| POST | `/admin/api/accounts/test` | 用该账号打一发真实请求测活 |
+| GET | `/admin/api/auth/app` | 探测本机 OfficeAce API（`?force=1` 强制重探） |
+| POST | `/admin/api/auth/start` | 发起一键授权，返回 `authorizeUrl` + `state` |
+| POST | `/admin/api/auth/check` | 轮询一个授权任务 |
+| POST | `/admin/api/auth/cancel` | 取消授权任务 |
+| POST | `/admin/api/auth/clear` | 清理已结束的授权任务 |
+| POST | `/admin/api/login/start` | **导入账号**：发起自助登录，返回 `{id, url}` 去浏览器打开。传 `forceLogin:true` = 先登出再授权（**换一个账号**） |
+| GET | `/admin/api/login/poll?id=` | 轮询登录进度，`status=done` 时就已入池 |
+| POST | `/admin/api/login/cancel` | 取消自助登录 |
+| POST | `/admin/api/login/clear` | 清理已结束的登录会话 |
+| GET | `/admin/api/login/status` | 自助登录概览（账号 + 会话） |
+| GET | `/admin/api/register` | 注册队列（统计 + 任务） |
+| POST | `/admin/api/register/enqueue` | 批量入队（手机号列表 / items） |
+| POST | `/admin/api/register/step` | 手动推进一轮 |
+| POST | `/admin/api/register/sms` | 录入某个任务的短信验证码 |
+| POST | `/admin/api/register/pause` | 暂停 / 继续 |
+| POST | `/admin/api/register/retry` | 重试某个任务 |
+| POST | `/admin/api/register/remove` | 删除某个任务 |
+| POST | `/admin/api/register/clear` | 清空已完成 / 失败 |
+| POST | `/admin/api/register/redeem` | 兑换邀请码 |
+| GET | `/admin/api/credits` | 每个号还剩多少积分（总览 + 逐号） |
+| POST | `/admin/api/credits/refresh` | 重新拉取积分（`{}` = 全部 / `{id}` / `{ids:[]}`） |
+| GET | `/admin/api/credits/detail` | 单号完整快照（奖励明细 + 近 30 天用量 + 费率 + 签到史） |
+| POST | `/admin/api/credits/claim` | **签到领积分**（`{}` = 所有启用账号 / `{id}` = 单个） |
+| POST | `/admin/api/credits/refresh-credential` | **凭据续期**：`refresh_token` → 新 AK/SK（`{id}` 可选） |
+| GET | `/admin/api/credits/claims` | 签到历史（`?id=` 看单个） |
+
+> 面板默认不校验口令（仅监听 `127.0.0.1`）。若想对外开放，请在「设置 → 面板访问口令」里设一个口令，
+> 之后访问 `http://127.0.0.1:7864/admin?token=你的口令`。
+
+> [!WARNING]
+> **改 `admin.html` 里那个 `api()` 助手之前，先看这一段。**
+> 面板发请求统一走 `api(path, { method, json })`，`json` 只是个约定，
+> **必须在这里翻译成 `fetch` 的 `body`**。曾经有一版把它原样丢给了 `fetch`，
+> 而 `fetch` 不认识 `json` 这个键、直接忽略——结果是**所有 POST 都在发空 body**：
+> 改名、停用、删除、测活、保存配置全部静默失败（服务端只能回「缺少 id」），
+> 而且**整整一轮测试都没发现**，因为测试是直接打接口、绕过了这个助手。
+>
+> 现在 `tools/test-admin.mjs` 里有一组测试专门盯着它：把真身抠出来配假 `fetch` 跑，
+> 外加一条「用旧写法必须复现 `缺少 id`」的反向对照。改完跑一遍自测。
+>
+> 另外记住：`admin.html` 是在**浏览器**里执行的，改完要 **Ctrl+F5 硬刷新**才生效，
+> 服务端热重载不算数。
+
+### 截图
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\screenshot.ps1 -Page accounts
+powershell -ExecutionPolicy Bypass -File tools\screenshot.ps1 -Page import   # 直接截导入弹窗
+powershell -ExecutionPolicy Bypass -File tools\screenshot.ps1 -All
+```
+
+> **这个脚本只清理它自己启动的那个无头 Chrome，绝不动你正在用的浏览器。**
+> 每次截图用独立的 `--user-data-dir`，清理时按命令行里那个唯一路径筛进程。
+> 千万别图省事写 `Get-Process chrome | Stop-Process`——那会把你开着的所有窗口一起杀掉。
+
+`-Page import` 用的是面板里的 `#import` 深链接：`http://127.0.0.1:7864/admin#import`
+会直接打开导入弹窗。书签、发给别人也都能用。
+
+### 自测
+
+```bat
+node tools\test-admin.mjs
+```
+
+会真实拉起一遍：面板页面、状态接口、配置读写、别名写入 + `/v1/models` 可见 + 真实请求落到别名目标、刷新、清日志、重置统计、
+号池扫描与档案解密、一键授权参数完整性、注册队列全流程、积分签名与解析、**凭据续期（含 token 轮换链回归测试）**、
+**签到幂等性**、**积分熔断**、**续期凭据回填账号档案**、**面板结构一致性（菜单 / 分组 / 页面容器三者对得上、
+浅色主题没被深色残留污染、导入弹窗引用的元素都存在、点开始真的会开新标签页）**、
+**自助登录（PKCE 推导、授权链接参数、会话落盘与过期淘汰、登录结果并入号池、四个接口的状态流转、私钥不外泄）**、
+**面板 `api()` 助手（json 真的变成请求体、空对象照发、不覆盖自己的头，外加一条"旧写法必须复现故障"的反向对照）**、
+**已删除账号的凭据绝不许再发请求（全 ID / accountId / userId / URL 编码四种写法都认得出，外加一条反向对照）**、
+**重新登录能把忽略名单里的号救回来（先确认没撤名单时扫盘真的会挡，再看撤销之后紧跟的那次 scan 不会把号抹掉）**、
+**健康度文案（签名凭据过期但 Basic 还在 →「可用 · 待续期」而不是红色「已过期」，外加一条反向对照）**、
+**上游报「模型不行」不等于「账号不行」（81004 / 81009 不能被判成鉴权失败，外加一条"老写法确实会整条冷却 5 分钟"的反向对照）**、
+**模型级拒绝的自愈（某条凭据其实能用该模型时，拒绝标记要被撤销）**、
+**幽灵账号 ID（`pending-<64hex>` 这种临时 userId 不许写进 accounts.json，`setLabel` 也要挡住；真账号一个都不许误删）**。
+当前 **197 项全通过**。
+
+另有一组独立的回归套件，专盯那个「第 14 次续期必然断链」的深坑：
+
+```powershell
+node tools\test-refresh-chain.mjs
+```
+
+它用一个「用掉即作废」的假 STS 连跑 30 次轮换，断言**一次都不能失败**；文件末尾还把
+老实现原样搬过来跑一遍做对照，确认它确实会在第 14 次断（不然这个测试就是空测）。
+当前 **19 项全通过**。
+
+再有一组，专盯「链子烧穿之后到底能不能自愈」：
+
+```powershell
+node tools\test-rearm-chain.mjs
+```
+
+同样用假 STS，跑「烧穿 → 重新上膛 → 第一次续期 → 第二轮 → 第三轮 → 再烧穿 → 再上膛」，
+外加一节【G】模拟「服务器把同一份 token 原样回给我们」。当前 **36 项全通过**。
+为什么需要这两组，见下一节末尾。
+
+> **有一条测试是拿真身跑的，别去动它。** 「面板 `api()` 助手」那组会把 `admin.html` 里的 `api()`
+> 抠出来、配上假的 `fetch` 跑，最后再真打一次服务端。原因见「常见问题 → 点了按钮没反应」那一节：
+> 这类 bug 只有跑真身才能发现，直接用 `fetch` 打接口是永远测不出来的。
+
+要单独验证「拿到凭据 → 能拼出可用网关连接」这一段（这一步没法靠假装登录来测）：
+
+```bat
+node tools\verify-oauth.mjs
+```
+
+它会用号池里现有的号走一遍第 6 步，然后**真的打一次网关的 `GET /models`**，
+并和号池里已有的那条凭据逐字节比对。全部一致就说明入库逻辑是对的。
+
+---
+
+## 七之二、号池
+
+一个账号在磁盘上散落在三处，本服务把它们拼成一条记录（**只读不写**，不动 OfficeAce 任何文件）：
+
+| # | 文件 | 拿到什么 |
+| --- | --- | --- |
+| ① | `~/.office-claw/.jiuwenclaw/config/routing_state/users/<账号ID>/models.json` | 上游网关地址 + `custom_headers.Authorization`（`Basic base64(AK:SK)`） |
+| ② | `<安装目录>\packages\api\.config\secure-config-nodejs\oauth-<账号ID>.json` | 临时 AK/SK、`security_token`、**过期时间**、`project_id`、`userName`、DPoP 标记 |
+| ③ | `~/.office-claw/users/<账号ID>/model.json` | 该账号可用的模型目录 |
+
+账号 ID 就是 OfficeAce 自己的目录名：`<华为云账号ID>:<IAM用户ID>`，格式来自 `huawei-oauth.js` 的 `toPrincipal()`。
+
+### ②是怎么读出来的
+
+```
+.oauth-profile-encryption-key   文件   → Windows DPAPI 解密 → install secret（43 字符）
+oauth-<账号ID>.json             JSON   → key = sha256(install secret)
+                                          alg = aes-256-gcm，iv / tag / data 都是 base64url
+                                       → providerState JSON
+```
+
+所以能显示**准确的剩余时长**（临时 AK/SK 默认 24 小时，刷新令牌约 30 天），而不是靠猜。
+
+### 号池与连接池的关系
+
+- 号池是账号归属的**唯一权威**：某个账号被停用后，即使磁盘上 `models.json` 还在，也不会被重新捞回连接池。
+- 停用 / 启用会**立刻**重算连接池（`/healthz` 的 `credentials` 会同步变化）——被测到 0 条时 `status` 变 `degraded`。
+- `config.accounts.onlyEnabled`（默认 `true`）控制是否只把「已启用」账号喂给连接池。
+
+### 手工导入
+
+适合从别的机器搬账号：把目标机器 `models.json` 里的 `api_base` 与
+`custom_headers.Authorization` 填进「导入账号 → 从别的机器搬账号」即可。导入项存在 `data/accounts.json`，
+可以真正删除；本机发现的账号只能停用（删了下次扫描还会回来，面板会提示）。
+
+> 日常加号不用填表 —— 点「导入账号」直接登录一个华为账号就行，见下一节。
+> 手工导入这条路留给「搬账号」这种低频场景，所以收进了弹窗里，不占号池页的地方。
+
+---
+
+## 七之三、导入账号（自助登录）
+
+面板上点「导入账号」，会弹出新页面让你登录一个华为账号，**登录完自己就进号池了**，不用回来点任何按钮。
+
+![导入账号](docs/panel-import.png)
+
+### 要加一个新号，请点「换个账号登录」
+
+对话框里有两个按钮，区别只有一个点：**华为云那边还记不记得你**。
+
+| 按钮 | 链接是什么 | 什么时候用 |
+|---|---|---|
+| **开始登录** | 直接指向授权流程 | 给**已经有的**那个号续授权（会话还在，云端直接放行，不用重填密码） |
+| **换个账号登录** | 先指向华为云的**登出**，登出完再回授权流程 | **再添一个新号**（第二个、第三个……） |
+
+为什么非得这样：
+
+```
+不带浏览器的华为云 cookie 时：
+  GET /authui/v1/oauth2/authorize              → 302 /authui/login?service=…   ← 要你登录
+  GET /authui/v1/oauth2/authorize&prompt=login → 同上（prompt 不影响判定）
+
+带着 cookie 时（就是你在浏览器里已经登过华为云的状态）：
+  GET /authui/v1/oauth2/authorize              → 302 直奔 redirect_uri 并带上 code
+                                                 ← 也就是"直接给我登录了"，拿当前号又登一遍
+```
+
+所以「开始登录」在已经登录过的浏览器里**永远看不到登录页** —— 它只是把当前那个号重新
+授权了一次。想换号只能先清会话：
+
+```
+/authui/logout?service=<authorizeUrl>
+```
+
+实测（`tools/probe-auth-switch.mjs`）这条能可靠地走到登录页：
+
+```
+  [1] 302  /authui/logout          → /authui/v1/oauth2/authorize
+  [2] 302  /authui/v1/oauth2/authorize → /authui/login?service=…
+  [3] 200  /authui/login           ← 停在这里，等你输账号密码
+```
+
+以后端来说就是 `POST /admin/api/login/start` 多了一个开关：
+
+```json
+{ "label": "第二个号", "forceLogin": true }
+```
+
+`forceLogin: true` 时返回的 `url` 是登出链接（`authorizeUrl` 字段仍是那个干净的授权地址，
+排障时想对照就取它）。`loginFlow.view()` 会把 `forceLogin` 透传出来，面板照它决定提示文案。
+
+> **代价要说清楚**：登出会把你**在华为云那边的登录状态一起清掉** —— 别的标签页、控制台
+> 都要重新登。这是目前唯一能可靠换账号的办法（`prompt=login` 实测没效果），
+> 所以面板上做成一个单独的按钮，不默认走这条。
+>
+> 另外：不管你用哪个按钮，登录完成后如果**授权的是号池里已有的号**，面板会明确写
+> 「已**重新授权** xxx（号池里本来就有这个号）」，而不是笼统的「已添加」——
+> 免得你以为加了个新号其实只是把旧的续了一遍。
+
+### 为什么能不要桌面端
+
+> ⚠️ 这一节曾经写着「绕开桌面端等于要自己重写整套凭据兑换，既不可靠也没必要」。
+> 那个结论是**错的**，后来被推翻了。记在这里当作教训：不确定就再挖一层。
+
+OfficeAce 走的是一条标准的 OAuth 授权码 + PKCE 流程，客户端能做，我们也能做。
+每一环都是从它自己的实现里读出来的：
+
+```
+1. POST  {cloud}/v1/claw/auth/state                    →  state
+     云端签发，不用任何鉴权。每次要一个新的。
+
+2. 本地生成 PKCE（code_verifier / code_challenge）和一对 P-256 DPoP 密钥
+     私钥只留本地，永远不出机器。
+
+3. 拼 authorizeUrl，让用户去浏览器登录
+     https://auth.huaweicloud.com/authui/login.html?service=<内层 OAuth2 授权>
+       内层：/authui/v1/oauth2/authorize
+             ?client_id=pdp5_for_agentarts
+             &code_challenge=<PKCE S256>
+             &state=<32 位 hex>
+             &redirect_uri=https://agentarts.cn-southwest-2.myhuaweicloud.com/v1/claw/auth/callback
+
+4. GET   {cloud}/v1/claw/auth/code?state=<state>        ← 整件事的钥匙
+     202 = 用户还没登完（AgentArts.11000009）
+     404 = state 不认识或过期
+     200 = 拿到了 authorization code
+
+5. POST  https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
+     Content-Type: application/x-www-form-urlencoded
+     DPoP: <ES256 proof JWT>
+     grant_type=authorization_code & code=<code>
+     & code_verifier=<verifier> & redirect_uri=<同上> & client_id=pdp5_for_agentarts
+       → 临时 AK/SK + security_token + project_id + refresh_token
+
+6. GET   {cloud}/v1/claw/client-permission-validate     （用第 5 步的凭据签名）
+       → model_info.model_auth_info.model_app_key / model_app_secret
+       → model_info.model_api_url_base
+
+7. 入库：上游网关用 Basic(model_app_key:model_app_secret)，这对**不会过期**；
+        临时凭据 + refresh_token + DPoP 私钥另存，用来签名控制面和自动续期。
+```
+
+**第 4 步是关键。** 云端回调页（`/v1/claw/auth/callback`）只是个终点页，
+上面写着「授权成功 / 请返回客户端体验」，它**不往本机跳**。
+桌面端是靠轮询 `/v1/claw/auth/code?state=` 把授权码取回来的 ——
+这条从 `packages/api/dist/index.js` 里挖出来的。知道这一点，整个链路就能自己跑完。
+
+顺带澄清一处容易误判的地方：`redirect_uri` 指向云端，看着像「必须有服务端配合」，
+其实不是。PKCE 的 `code_verifier` 在请求 state 的那一方手里，云端只是暂存 code
+等你去取，取的时候再验 verifier。所以**谁要的 state，谁就能取**。
+
+### 凭据的两层，别搞混
+
+| | 临时凭据 | 网关凭据 |
+|---|---|---|
+| 长什么样 | `HSTA...` 开头的 AK/SK + `security_token` | `model_app_key` / `model_app_secret` |
+| 用在哪 | 签名控制面（`agentarts.*`） | 上游 MaaS 网关的 `Authorization: Basic` |
+| 有效期 | **实测 2 小时**（见下） | **不过期** |
+| 从哪来 | 第 5 步 | 第 6 步 |
+
+上游干活只用网关凭据；临时凭据是拿来「问云端问题」和续期的。
+所以只要第 6 步拿到过一次，这个号就能一直用到华为那边轮换密钥为止。
+
+### 临时凭据到底活多久？过期了会怎样？
+
+**结论：实测 2 小时，而且过期也不影响转发。**
+
+华为云 STS 发的临时 AK/SK 本身有寿命（官方文档写"最长 24 小时"，但**实际发下来多久由服务端策略决定**，
+这套 AgentArts 发的是 **2 小时**）。量一下就知道：
+
+```powershell
+node tools\probe-lifetime.mjs
+```
+
+```
+  ── 逐次续期的真实寿命（以 refreshedAt / expiresAt 为准）──
+  本次签发时间(本地)      到期时间(本地)        真实寿命
+  2026-10-10 09:38:55   2026-10-10 11:38:55     2.00 小时
+  当前这份还剩 1.96 小时（117 分钟）
+  本轮寿命 2.00 小时  →  提前量 25% = 30 分钟
+  →  约 87 分钟之后触发下一次自动续期
+```
+
+> **算寿命时别把时区搞混**（我第一版写错了）：日志里的 `[HH:MM:SS]` 是本机本地时间且不带日期，
+> `expiresAt` 是 UTC ISO 串 —— 直接相减会凭空多出/少掉 8 小时，算出「10 小时」「-16 小时」这种值。
+> 唯一可靠的锚点是 state 里的 `refreshedAt`（跟 `expiresAt` 同一套绝对时间轴）。
+
+**时间到了会怎样？** 分两件事看，这也是最容易焦虑的地方：
+
+| | 临时 AK/SK 过期 | 影响 |
+|---|---|---|
+| **转发模型**（`/v1/chat/completions`） | **完全不受影响** | 走的是不过期的网关 `Basic` 密钥 |
+| 读积分 / 自动签到 | 读不出来 | 需要一份有效的临时 AK/SK 去签名 |
+
+所以「凭据剩余时长」那个倒计时归零，**不等于号废了** —— 面板上遇到这种情况标的是
+中性色的「待续期 · 转发不受影响」，不是红色「已过期」。
+
+**过期之后怎么办？三种情形，服务自己处理前两种：**
+
+| 情形 | 服务的行为 |
+|---|---|
+| ① 链子还活着（`refresh_token` 还有效，默认 30 天） | **临期前自动换一份新的**，你什么都不用做 |
+| ② 链子已烧穿（所有 refresh_token 都被用过或作废） | 记一条 WARN，面板提示需要重新登录一次；此时转发依然正常 |
+| ③ `refresh_token` 也过期了（30 天没开过桌面端） | 同上，点一次「导入账号」重新授权即可 |
+
+第 ① 种是常态，由**临期自动续期任务**负责（`src/index.mjs`）：
+
+- **提前量按比例算**，不写死小时数 —— 寿命是未知的（2 小时还是 24 小时取决于服务端策略），
+  所以用「本轮寿命的 25%」（`renewLeadRatio`，上限 `renewBeforeHours` 小时）。
+  2 小时寿命 → 剩 30 分钟时换；24 小时寿命 → 剩 6 小时时换。
+- **检查间隔 15 分钟**，开机立刻先跑一遍（重启时凭据可能已经没剩多少，等 15 分钟就来不及了）。
+- **安全阀**：只有链子还能挑出 token 时才动。挑不出就记一条
+  `凭据即将过期，但续期链上挑不出可用 token，只能等重新登录` 然后不动 ——
+  硬撞只会把一个必然 `STS5.1806` 的值发上去，白烧一份一次性 token。
+
+配置项（`config.json` → `credits`）：
+
+```json
+"autoRenewCredentials": true,   // 总开关
+"renewLeadRatio": 0.25,         // 提前量 = 本轮寿命 × 这个比例
+"renewBeforeHours": 3           // 提前量的上限（24 小时寿命的兜底，别为"剩 6 小时"白换）
+```
+
+日志长这样：
+
+```
+[01:38:56] INFO  boot  临期自动续期已启用 {"leadRatio":0.25,"leadCapHours":3,"checkSeconds":900}
+[01:38:56] INFO  boot  临期凭据已主动续期 {"id":"a1b2c3d4…","leftMinutes":108,"leadMinutes":30,
+                                         "tokenSource":"rotated","expiresAt":"2026-10-10T03:38:55.877Z"}
+```
+
+> **为什么不干脆把寿命调长？** 调不了 —— 寿命是 STS 服务端定策略给的，不是我们能选的参数。
+> 而且临时凭据本来就该短：它是拿来签名的，泄露窗口越小越好，出事了服务端拒绝续期就等于吊销。
+> 真正该保证的是「永远有人替你提前换下一份」，那正是上面这个任务做的事。
+
+### 用到的接口
+
+| 接口 | 说明 |
+|---|---|
+| `POST /admin/api/login/start` | 要一个 state，返回 `{id, url, state, expiresInMs}` |
+| `GET /admin/api/login/poll?id=` | 查进度；`status` 为 `done` 时账号已入池 |
+| `POST /admin/api/login/cancel` | 取消 |
+| `POST /admin/api/login/clear` | 清掉已结束的会话 |
+| `GET /admin/api/login/status` | 概览：自助登录进来的账号 + 会话列表 |
+
+`status` 取值：`pending`（等登录）→ `exchanging`（换令牌中）→ `done`
+；失败分支是 `failed` / `expired` / `canceled`。
+
+### 几个实现上的注意点
+
+- **`state` 每次都要新的**，云端签发的，别自己编。
+- **轮询是背景任务**，不靠前端驱动：服务自己每 2.5 秒问一次，
+  所以关掉面板页面也不影响；服务重启也会接着轮（会话落在
+  `data/login-sessions.json`，重启时自动恢复 `pending` 的）。
+- **私钥不出服务端**：`/login/start` 和 `/login/poll` 的返回里只有链接和状态，
+  `code_verifier`、DPoP 私钥、AK/SK 一个都不带。
+- **未开通的号会明确报错**，不会干等：`client-permission-validate` 拿不到
+  `model_info` 时提示「这个账号还没开通服务，需要先兑换邀请码」。
+- 账号落在 `data/oauth-accounts.json`（`0600`，里面有 refresh_token 和私钥），
+  元数据由 `accounts.mjs` 读进号池，所以额度查询 / 自动续期 / 连接池调度
+  都当它是普通账号，没有特例分支。
+
+### 移除一个本机账号（面板上的「删除」会不会真删掉）
+
+分两种情况，面板和接口都按这个来：
+
+| 账号来源 | 点「删除」的结果 |
+| --- | --- |
+| **手工导入**（`sources === ['imported']`） | 真删。记录在本服务的 `data/accounts.json` 里，删掉就没了 |
+| **本机 OfficeAce 文件里发现的** | 记进**忽略名单**。不写 OfficeAce 的任何文件，但效果和删除一样 |
+
+第二种为什么要这样：这类账号是从磁盘上**三处只读文件**拼出来的
+（`routing_state/.../models.json`、`secure-config-nodejs/oauth-<ID>.json`、`users/<ID>/model.json`）。
+抹掉内存里的记录没用 —— 下一轮 `scan()`（45 秒一轮）立刻又把它原样捡回来。
+而真去删 OfficeAce 的文件就违反了本项目的硬约束，还会把桌面端弄坏。
+
+所以做法是：把 id 记进 `data/accounts.json` 的 `ignored` 数组。之后：
+
+- `scan()` 的建记录入口对忽略的 id 直接返回 `null`，号不会进入号池
+- 它不会出现在账号列表，也不会被连接池拿去发请求
+- 立刻生效，不用等下一轮扫描
+- **随时能恢复**：面板「配置」页最下面有「已忽略的账号」，点「恢复」就回来了
+  （默认顺带启用，因为你要把它找回来多半就是想用它）
+
+> **这里同时修掉一个真 bug。** 老 `remove()` 里写的是：
+>
+> ```js
+> this.meta.disabled = this.meta.disabled.filter((x) => x !== key);   // ❌
+> ```
+>
+> 这一句是 `setEnabled()` 里「**启用**」那一半（`set.delete(key)`）照抄过来的，
+> 方向反了。后果是点「删除」既不删也不停，反而会把一个**已经停用**的号
+> **重新启用**，而且面板上只弹一句「已停用」让人以为成功了。
+> 实测确认：点完之后 `data/accounts.json` 里 `disabled` 还是空的，
+> 服务接口返回该账号 `enabled: true`。
+>
+> 现在的行为是「进忽略名单 + 保持停用」，并且补了回归测试盯着
+> （含一条把老那一行原样搬过来跑、确认它确实会反转的对照）。
+>
+> 顺带一提，忽略名单里会**保留别名** —— 不然恢复页上只能看到 `a1b2c3d4`
+> 这种 ID 前缀，根本认不出是哪个号。
+
+### 还留着的老路子：走本机桌面端
+
+面板「配置 → 授权」那一块的一键授权仍然可用，走的是本机 OfficeAce 自己的接口：
+
+```
+POST https://127.0.0.1:3004/api/login/authorize   → { authorizeUrl, state }
+```
+
+**但它要求桌面端在运行**，而且 `OFFICE_CLAW_WINDOWS_RANDOM_PORTS=true`
+的时候 Windows 上端口是随机的，写死 3004 并不靠谱
+（可以在 `config.auth.appApis` 里加候选地址）。
+自助登录没有这些限制，是推荐路径。
+
+> ⚠️ 一键授权这条路进来一个号之后，第一次请求进去会**自动补上网关凭据**。
+> 原因见下一节。
+
+---
+
+## 七之三之二、两个号以上时会踩的坑（实测踩过的）
+
+你加第二个号的时候，下面这几件**都真的发生过**，不是理论风险。
+
+### 坑一：加了号，积分也读得到，但一个请求都转发不出去
+
+**现象**：新号出现在账号池里、健康度写着「无凭据」、积分查得到、签到也签得上，
+但连接池里只有 1 条凭据，`pool.size` 卡在 1 —— 转发永远不会选它。
+
+**为什么**：一个号要能**转发**，需要 MaaS 网关的 `Basic base64(app_key:app_secret)`。
+而反代拿这对 key 只有两个来源：
+
+| 来源 | 谁产生的 | 有没有 |
+| --- | --- | --- |
+| `routing_state/users/<id>/models.json` | **桌面端**自己请求过模型时写的 | 一键授权进来的号**没有** |
+| 控制面 `client-permission-validate` 的 `subscription.model_info.model_auth_info` | 自助登录那条路会顺手取回来 | 一键授权那条路**没取** |
+
+一键授权只让桌面端写了档案和用户目录，**从来不产生 `models.json`** ——
+桌面端之所以有那份文件，是因为它自己发起过对话。结果就是新号成了
+"看得见、用不了"，而面板上的「今日签到 2/2」「剩余积分 13000」看着像两个号都能用。
+
+**修法**：加了 `src/gatewayKey.mjs`，在两处补：
+
+1. 一键授权绑定成功那一刻（`authflow.mjs` 的 `onBound`）；
+2. 开机扫一遍（`index.mjs`），把历史上攒下的这种号一起修掉。
+
+补的数据就来自控制面那个接口 —— 和自助登录走的是同一个、同一套字段，
+所以**不需要用户重新登录一次**。补完自动重新发现一次，号立刻进场。
+
+> 注意 `model_info` 在响应里的位置是 `subscription.model_info`，**不在顶层**。
+> 只看顶层会误判成"这个号还没开通服务"，把一个完全正常的号报成坏的（踩过）。
+
+想手工验一下某个号能不能补：
+
+```powershell
+node tools\probe-backfill-cred.mjs
+```
+
+它会把每个号的凭据状况打出来，并**真的用补出来的那条凭据打一发上游**。
+
+### 坑二：随手打一个模型名，能把整个池子打哑 5 分钟
+
+**现象**：`glm-5.3-zx` 这种"列表里有、上游没有"的模型，打一次之后
+**正常模型也跟着 502**，池子里那条凭据显示 `cooldownMsLeft ≈ 268000`。
+
+**为什么**：上游对这类请求回 **403**，而分类逻辑里 `status === 403` 直接等于
+`authFailed` → `markAuthFailed()` → 整条凭据冷却 `cooldownOnAuthErrorMs`（默认 5 分钟）。
+但上游那两种 403 根本不是鉴权问题：
+
+| 上游码 | 含义 | 是谁的问题 |
+| --- | --- | --- |
+| `ModelArts.81004` | 这个模型你这个号没权限 | **模型** |
+| `ModelArts.81009` | 这个模型名上游不认 | **模型** |
+| `APIG.1009` / `AppKey or AppSecret is invalid` | 凭据真坏了 | 账号 ✅ |
+
+**修法**：`classifyUpstream` 新增 `modelRejected`，并且 `authFailed` 明确排除它。
+被拒时只给「凭据 × 模型」这个组合一个 60 秒的短冷却
+（`cooldownOnModelRejectMs`），**整条凭据一点都不动**。另外：
+
+- 别的模型完全不受影响；
+- 成功过一次就**撤销**拒绝标记 —— "这个号没这个模型"是个假设，
+  上游加了权限之后得能自愈；
+- 池里**每条凭据都拒绝过**这个模型时，直接回一个干净的
+  `400 model_not_available`，而不是把 3 次重试配额全花在一个必然失败的组合上
+  （以前是重试 3 次 + 退避，白等好几秒再给你一个 502）。
+
+### 坑三：`/v1/models` 列出来的模型，有 2/3 其实用不了
+
+实测两个号的时候：**33 个模型里只有 9 个真的能用**，其余 24 个上游要么
+`81009 Invalid model`、要么 `81004 没权限`。而 `/v1/models` 照样把它们全列出来。
+
+现在会**说真话**了：
+
+- `/healthz` 多一个 `modelsUnavailable: [...]`；
+- 面板「模型管理 → 可用模型」上面会出现一条黄色提示，把这些模型名直接列出来，
+  并说明这是**上游网关**的问题、换账号也一样。
+
+它们**故意还留在** `/v1/models` 里（客户端配置不用改），但打过去会立刻收到 400，
+不会再白等重试。
+
+### 坑四：`/healthz` 的几个数放在一起会骗人
+
+改之前：
+
+```json
+{"status":"ok","credentials":1,"accounts":2,"accountsEnabled":2,"creditsAccounts":"2/2","creditsRemaining":12998}
+```
+
+`credentials: 1` 是真的（只有 1 条能转发的凭据），但它和 `accounts: 2` /
+`"2/2"` 摆在一起，谁都会读成"两个号都能用、额度加起来能用"。
+
+改之后，每个数都说清自己是什么，并补了真正有区分度的字段：
+
+```json
+{
+  "status": "ok",
+  "credentials": 2,                  // 真正能被调度去转发的凭据条数（"能用几个号"）
+  "accounts": 2,                     // 号池账号数（含没凭据、含停用）
+  "accountsEnabled": 2,
+  "accountsUsable": 2,               // 启用的号里健康状态为 ok 的个数 ← 关键
+  "creditsAccounts": "2/2",          // 读得到积分的号 —— 不代表它们能转发
+  "creditsRemaining": 12996.74,      // 所有读到额的号之和
+  "creditsRemainingEnabled": 12996.74, // 只算「启用且读到额度」的号 ← 真能花的
+  "modelsUnavailable": ["glm-5-test", "longcat-flash-chat-test", "glm-5.3-zx"]
+}
+```
+
+`status` 的判据也改了：以前只看 `pool.size > 0`，一个号坏了照样报 `ok`；
+现在要求「有凭据」**并且**「启用账号里至少有一个是健康的」。
+
+### 坑五：假账号 ID 会永久留在盘上
+
+桌面端授权过程中会上报一个临时 `userId`，形如 `pending-<64位hex>`。
+老代码只判「真值 + 不在之前的集合里」，于是它被当成真实账号写进了
+`data/accounts.json` 的 `labels`，并且**消不掉**（`setLabel` 只判 id 非空）。
+
+**修法**（三道）：
+
+1. `src/authflow.mjs` 的 `isRealUserId()` —— 真实 ID 是 32 位小写 hex，
+   形如 `pending-…` 的直接不当新账号，等下一轮再看；
+2. `src/accounts.mjs` 的 `isRealAccountId()` —— 要求 `<32hex>:<32hex>`，
+   `setLabel` 和 `pruneMetaKeys()` 都用它；每次 `scan()` 顺手清一遍盘上的幽灵键；
+3. `POST /admin/api/accounts/label` 对不存在的 ID 返回 **404**（以前返回 200「成功」，
+   前端以为改好了）—— 那条曾经是唯一一个 HTTP 可达的活口。
+
+`pruneMetaKeys()` 只做减法、只删**形态就不像账号**的键，所以真账号一个都不会误删 ——
+哪怕 OfficeAce 没启动、一个号都扫不到，合法形态的键也原样留着。
+
+### 坑六：签到失败的号会被每分钟重试一次，一直重试到当天结束
+
+签到失败时**不会**标记「今天已签」（这是对的，`claimBonus` 在读凭据失败时
+在写 claims 之前就 return 了），可筛选条件 `!claimedToday(id)` 于是**永远成立**，
+而定时器是 60 秒一轮 —— 一个没有 AK/SK 或者没开通服务的号会被每分钟打一次。
+
+**修法**：失败之后记 30 分钟退避再试。当天签到窗口很宽（默认 09:05 之后都算），
+真要补救得回来也来得及，但不会把上游和自己按住反复打。
+
+顺带把 **「签了」和「领到了」拆开**：上游对已领过的号回 200 + 空奖励，
+代码照样记成"今天签过了"，于是面板显示「今日签到 2/2」而 `claimTotal` 是 0 ——
+两个数字自相矛盾。现在 `summary` 里多一个 `claimedWithGain`，
+`/healthz` 那边也不再拿这两个数凑在一起吓人。
+
+### 坑七：一个号续期卡住，会拖住所有号
+
+`renewPass()` 里原来是 `for + await refreshCredential` **串行**跑，而
+`renewInFlight` 是个模块级**单布尔**：一个号的续期请求撞上 25 秒超时，
+后面所有号的临期判断都得排队等。
+
+**修法**：改成按账号记（`renewInFlightAccounts` 是一个 `Set`）。
+同一个号不会被重复续期，但不同号之间互不阻塞。
+
+### 坑八：汇总里的 `lastError` 是"最后一个出错账号"的
+
+`QuotaService.lastError` 只有一个全局字段，而且**只写不清**：A 号失败过一次
+留下的文案会一直被 B 号看见，B 号成功了也不会擦掉。多账号下就会出现
+「两个号都 ok、各自 `error` 都是空的，汇总里却挂着一条旧错误」。
+
+**修法**：加 `lastErrorByAccount`（按账号，成功即清除），全局那条也记上
+是哪个账号留下的、该账号恢复后自动擦掉。
+
+---
+
+## 七之四、批量注册
+
+### 真实边界，先说清楚
+
+华为云注册页（`https://reg.huaweicloud.com/registerui/register.html`）必须过
+**图形验证码 + 短信验证码**。图形验证码由服务端下发、一次性，没有稳定可复用的自动化通道。
+所以本模块把它做成「队列 + 状态机 + 可插拔接码」：
+
+| 环节 | 自动化 |
+| --- | --- |
+| 生成带手机号的注册链接 | ✅ 自动 |
+| 取短信验证码 | ✅ 可插拔（手工 / 接码平台 / 固定码） |
+| 检测账号生效 | ✅ 自动（扫号池） |
+| 一键授权 | ✅ 自动（走上一节链路） |
+| 用别名并入号池 | ✅ 自动 |
+| 兑换邀请码开通额度 | ✅ 自动（`/api/login/invitation`） |
+| 填图形验证码、点提交 | ❌ 人工，两步 |
+
+### 短信验证码来源
+
+```jsonc
+"register": {
+  "sms": {
+    "provider": "manual",          // manual | http | fixed
+    "fixedCode": "",
+    "http": {
+      "urlTemplate": "https://sms.example.com/api/get?phone={phone}&project={project}",
+      "project": "",
+      "method": "GET",
+      "codePath": "data.code",     // 从响应 JSON 里取码的点分路径
+      "headers": {},
+      "timeoutMs": 20000
+    }
+  }
+}
+```
+
+- `manual` —— 面板任务行里直接填码（最省事，一个号填一次）
+- `http` —— 接码平台，`{phone}` / `{project}` 会被替换；取不到码会自动退回手工填
+- `fixed` —— 固定码，本地联调 / 自建环境用
+
+### 状态机
+
+```
+pending → opening → needcode → submitted → awaiting_auth → activating → done
+                                                                    ↘ failed
+```
+
+每个任务保留最近 30 条事件，失败可重试（`maxAttempts` 默认 3），并发默认 1（`register.concurrency`）。
+
+### 邀请码错误码对照
+
+| 错误码 | 含义 |
+| --- | --- |
+| `AgentArts.00000104` | 权限不足，请配置对应权限 |
+| `AgentArts.11000008` | 邀请码无效，请重新输入 |
+| `AgentArts.11000009` | 邀请码不存在或今日配额已用完 |
+| `AgentArts.11000006` | 账号已被封禁 |
+| `common.01010003` | 当前用户缺少 admin 权限，需主账号操作 |
+| `common.01010004` | 账号未实名认证或处于欠费状态 |
+
+---
+
+## 七之五、积分额度（每个号还剩多少）
+
+面板侧边栏「**积分额度**」页，以及「号池」页顶部的积分总览，会告诉你**每个账号还能跑多少**。
+
+### 一句话看懂
+
+```
+【个人体验版】正常，有效期还剩 32 天
+到期：2026/11/9 00:43:17
+
+总共 6500 积分   已用 18.83   剩余 6481.17
+  套餐积分 500 / 500
+  奖励积分 5981.17 / 6000
+  联网搜索剩 200 次（共 200）
+
+奖励明细：
+  新用户专属福利  剩 4000 / 4000      到 2026/11/8 16:43:19
+  每日签到有礼    剩 987.13 / 1000    到 2026/10/8 23:59:59
+  国庆黄金周·登录翻倍礼  剩 994.04 / 1000  到 2026/10/8 23:59:59
+```
+
+### 积分是什么单位
+
+额度单位叫 **`officeace_points`（积分）**，不是 token。模型按积分扣费，换算率由官方 `/v1/model-token-rates` 给出：
+
+| 模型 | 输入 token / 积分 | 输出 token / 积分 | 缓存 token / 积分 | 成本系数 |
+| --- | --- | --- | --- | --- |
+| `glm-5.2` | 4375 | 1250 | 17500 | 0.70 |
+| `glm-5.1` | 4375 | 1250 | 17500 | 0.67 |
+| `glm-5` | 4375 | 1250 | 17500 | 0.50 |
+| `deepseek-v3.2` | 4375 | 1250 | 17500 | 0.30 |
+| `deepseek-v4-flash-0731` | 4375 | 1250 | 17500 | 0.30 |
+| `deepseek-v4.1-flash` | 4375 | 1250 | 17500 | 0.30 |
+
+也就是说跑 `deepseek-v3.2` 时 **1 积分 ≈ 4375 输入 token**，缓存命中时 1 积分能换 17500 token（最划算）。
+`cost_coefficient` 是相对倍率，数值越小越便宜。
+
+### 怎么算出来的
+
+**额度不在本机**，由华为云持有。本服务直接用账号的临时 AK/SK 去问，**本机 OfficeAce 登录与否不影响**——
+凭据过期还会自动用 `refresh_token` 换新的（见 [七之六](#七之六自动续期--每日签到--服务守护)）：
+
+| # | 请求 | 拿到什么 |
+| --- | --- | --- |
+| ① | `GET {agentarts}/v1/claw/client-permission-validate` | 校验凭据；返回该账号的专属网关 `model_api_url_base` |
+| ② | `GET {网关}/v1/subscription`（头 `x-subscription-type: v2`） | 套餐 + 积分总额 + 已用 + 奖励明细 |
+| ③ | `GET {网关}/v1/subscription/usage?sku_attr_code=officeace_points&aggregation=day` | 每天花了多少积分 / 多少 token |
+| ④ | `GET {网关}/v1/model-token-rates` | 上面那张费率表 |
+
+② 的响应结构（截取关键字段）：
+
+```jsonc
+{
+  "subscribe_status": "SUBSCRIBED",
+  "skus": [{
+    "sku_code": "officeace.personal.package.trial",
+    "sku_name": "个人体验版",
+    "expired_time": "2026-11-08T16:43:17.412Z",
+    "quotas": [
+      { "sku_attr_code": "online_search_count", "sku_value": "200", "current_value": "0" },
+      { "sku_attr_code": "officeace_points",     "sku_value": "500", "current_value": "0" }
+    ]
+  }],
+  "bonus_skus": [
+    { "activity_name": "新用户专属福利", "points": "4000", "current_value": "0" }
+  ],
+  "model_infos": [{ "model_api_url_base": "modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com" }]
+}
+```
+
+计算规则（和 OfficeAce 前端口径完全一致）：
+
+```
+剩余积分 = Σ sku_value − Σ current_value        // 只看未过期的 quotas，sku_attr_code = officeace_points
+奖励剩余 = Σ points    − Σ current_value        // expired_time 已过的奖励不计入
+总剩余   = 套餐剩余 + 奖励剩余
+```
+
+> **扣费顺序**：先到期早的先用 —— 也就是先扣奖励，再扣套餐。所以看到「套餐 500 一分没动、奖励掉了 18.83」是正常的。
+
+### 认证：华为 V11-HMAC-SHA256
+
+`/v1/claw/*` 用标准的 `SDK-HMAC-SHA256`；但**模型网关 `/v1/subscription*` 只认 `V11-HMAC-SHA256`**
+（用错会回 `APIG.0624 Unsupported signature algorithm`）。V11 多了一层区域作用域，签名密钥要先派生：
+
+```
+CredentialScope = <YYYYMMDD>/<region>/apic                    // region = cn-southwest-2
+sdkDate         = 20261008T094600Z                            // ISO 去掉 - : 和毫秒
+CanonicalURI    = 路径分段逐个 rfc3986，末尾补 /
+CanonicalQuery  = 按 key→value 排序，k=v 用 & 连接
+CanonicalReq    = [方法, URI, Query, "头1:v1\n头2:v2\n", "头1;头2", sha256(体)].join("\n")
+StringToSign    = ["V11-HMAC-SHA256", sdkDate, scope, sha256(CanonicalReq)].join("\n")
+
+SigningKey = HMAC(HMAC(AK, SK), scope + 0x01)[0..32]          // 取前 32 字节，再转 hex 当密钥
+Signature  = hex(HMAC(SigningKey, StringToSign))
+
+Authorization: V11-HMAC-SHA256 Credential=<AK>/<scope>, SignedHeaders=<小写头名;分号连接>, Signature=<sig>
+```
+
+参与签名的头：`x-sdk-date`、`x-security-token`、`host`、`x-project-id`，以及自定义头（如 `x-subscription-type`）。
+GET 请求**不带** `Content-Type`。这些细节都能在 `src/quota.mjs` 里看到完整实现。
+
+### 接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/admin/api/credits` | 全部账号的额度 + 汇总（读缓存，秒回） |
+| `POST` | `/admin/api/credits/refresh` | 刷新。`{}` 刷全部；`{"id":"..."}` 刷一个；`{"ids":[...]}` 刷几个 |
+| `GET` | `/admin/api/credits/detail?id=<账号ID>` | 单账号完整快照（奖励明细 / 近 30 天用量 / 费率表 / 历史），加 `&force=1` 强制刷新 |
+| `GET` | `/healthz` | 顺带返回 `creditsRemaining` 与 `creditsAccounts` |
+
+### 配置
+
+```jsonc
+{
+  "credits": {
+    "enabled": true,
+    "ttlSeconds": 300,        // 面板读缓存的有效期
+    "autoRefreshSeconds": 900, // 后台自动刷新周期；设 0 = 只在手动/开面板时刷
+    "timeoutMs": 20000,
+    "region": "cn-southwest-2",
+    "gateway": "",            // 留空 = 自动探测该账号的专属网关
+    "history": true,          // 记历史快照，用来估算消耗速度
+
+    "autoRefreshCredentials": true,          // 临时 AK/SK 过期时自动用 refresh_token 换新的
+    "refresh": {
+      "tokenUrl": "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens",
+      "clientId": "pdp5_for_agentarts",
+      "timeoutMs": 25000
+    },
+    "autoClaim": { "enabled": true, "hour": 9, "minute": 5 }, // 每天自动签到
+    "cooldownOnEmptyCreditsMs": 600000,      // 积分熔断冷却；0 = 关掉
+    "lowBalanceWarn": 200                    // 余额低于此值在日志告警；0 = 不告警
+  }
+}
+```
+
+### 省额度的几个玩法
+
+- **看「按此速度还能用多久」**：面板会按近 7 天的日均消耗外推，直接告诉你还能撑多少天。
+- **优先用便宜的模型**：`deepseek-v4.1-flash` / `deepseek-v3.2` 系数只有 `0.30`，是 `glm-5.2` 的 43%。
+- **让缓存命中**：`cached_tokens_per_point` 是 `prompt_tokens_per_point` 的 4 倍，多轮对话里保持前缀稳定最省。
+- **停用号不影响额度查询**：停用只影响它是否被喂给连接池，积分照常能看，方便留作备用号。
+- **每天签一次到**：白送的 1000 积分，一天不领就作废 → 见下一节。
+
+> 查询额度全程**只读**，不会消耗任何积分，也不会改动 OfficeAce 或华为云上的任何数据。
+> 只有两处会写：`data/refresh-state.json`（轮换后的 refresh_token）和 `data/bonus-claims.json`（签到记录）。
+> OfficeAce 自己的文件始终只读。
+
+---
+
+## 七之六、自动续期 · 每日签到 · 服务守护
+
+这一节解决三个「放着自己就会坏」的问题。
+
+### 问题一：临时 AK/SK 只有 24 小时
+
+OfficeAce 给的是**临时凭据**（`sts` 发的，寿命 24 小时）。过期之后额度查询、上游调用全部 401，
+以前只能重新登录一次 OfficeAce —— 每天一次，很烦。
+
+**现在会自动续期。** 同一份档案里的 `refresh_token` 有 **30 天**寿命，拿它去 IAM 换新 AK/SK 即可：
+
+```
+POST https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens
+Content-Type: application/x-www-form-urlencoded
+DPoP: <ES256 签名的 DPoP proof JWT>
+
+client_id=pdp5_for_agentarts
+grant_type=refresh_token
+refresh_token=<档案里的 refresh_token>
+
+→ { credentials: { access_key_id, secret_access_key, security_token, expiration, project_id },
+    refresh_token: <轮换后的新 token>, id_token: ... }
+```
+
+DPoP proof 的结构（纯 Node 内置 `crypto` 实现，不引依赖）：
+
+```jsonc
+// header（只带公钥，绝不能带私钥）
+{ "typ": "dpop+jwt", "alg": "ES256", "jwk": { "kty": "EC", "x": "...", "y": "...", "crv": "P-256" } }
+// payload
+{ "htm": "POST", "htu": "<tokenUrl>", "iat": 1791507599, "jti": "<16 字节随机 hex>" }
+// 签名：ECDSA-P256-SHA256，raw R||S 共 64 字节，base64url
+```
+
+**坑（已经踩过）：`refresh_token` 是一次性轮换的。** 换回来的新 token 才是下次能用的，
+旧的重放会得到 `STS5.1806 the refresh token has been used`。
+
+而 OfficeAce 磁盘上那份档案是**只读**的，它的 token 永远是初始的 `T0`，不会更新。
+所以本服务自己记住「磁盘那份动过没有」：
+
+| 记录状态 | 判断 | 用哪个 |
+| --- | --- | --- |
+| `diskTokenUsed` 为空 | 从没用过磁盘那份 | 用磁盘的 `T0` |
+| `diskTokenUsed` 等于磁盘那份 | 磁盘是旧的 | 用轮换出来的 `Tn` |
+| `diskTokenUsed` 不等于磁盘那份 | App 自己重新登录、写了份新的 | 跟磁盘走 |
+| 两边都被拉黑 | 链子彻底断了 | 不发请求，直接提示需要重新登录 |
+
+> **`diskTokenUsed` 只跟「档案那条线」走，绝不能被轮换值带偏。**
+> 这条不变式是整条链不打架的关键。判断「这次发的是不是档案那条线的那一份」
+> 交给调用方（`record` 的 `sentDiskToken`，取 `pick.source` 是否 `disk*`），
+> **不要**用字符串相等去猜 —— 发出去的 token 跟档案上那份相等，恰恰说明它就是
+> 档案那条线的。一旦让它指向轮换值，就会出现两种坏结果：
+>
+> - 下一轮看到「档案 == 锚点」，放着新鲜 token 不用，去捡一个刚被拒过的；
+> - 或者反过来误判「档案被换新了」，每次续期都触发一次多余的「重新上膛」，
+>   **每上膛一次白烧一份一次性 `refresh_token`**（实测日志里 90 秒连烧 5 次）。
+>
+> 另外两个字段的分工也要分清：
+>
+> | 字段 | 含义 | 来源 |
+> | --- | --- | --- |
+> | `deadTokens` | **服务器明确拒过**（`STS5.1806`），再发必拒 | `breakChain()` |
+> | `consumed` | 我们发过、**服务器认了**（200）的单次性 token | `record()` |
+>
+> `pickToken` 两个都要排除。但「服务器把同一份 token 原样回给我们」这种情况
+> 两样都不算 —— 那是服务器自己说它还能用，把它当死值就等于自己把链子掐了。
+
+> **这里踩过一个很深的坑，值得记下来。**
+>
+> 最初的实现是用一个数组存「我们消费过的 token 链」，再靠它反推磁盘那份是不是旧的。
+> 问题出在那个数组有 `.slice(-12)` 的上限：**第 14 次续期**时，磁盘锚点 `T0`
+> 被挤出窗口，于是判断逻辑走进「磁盘不在链里 → 跟磁盘走」的分支，
+> 把早已作废的 `T0` 当成新 token 发上去 → `STS5.1806`。
+> 而当时的失败处理更糟：它把 `lastUsedToken`、`rotatedToken`、`consumed` 全删了，
+> 其中 `rotatedToken` 恰恰是当时**唯一还可能有效**的东西。删完下一轮又退回 `T0`
+> （正是刚被拒的那个），于是永久卡死，重启也好不了。
+>
+> 凭据寿命实测只有 2 小时，所以这个坑**一天之内必然踩到**。
+>
+> 现在改成两个显式值：`diskTokenUsed`（一个字符串，不是会溢出的数组）
+> 和 `deadTokens`（确认作废的 token）。判断不再依赖任何有上限的结构。
+> `breakChain()` 也只拉黑被拒的那一份 —— 轮换值被拒才清轮换值。
+>
+> **回归测试**：`tools/test-refresh-chain.mjs` 用一个「用掉即作废」的假 STS
+> 连跑 30 次续期，断言一次都不能失败；文件末尾还把老逻辑原样搬过来跑一遍做对照，
+> 确认它确实会在第 14 次断（不然这个测试就是空测）。
+>
+> 老格式的 `refresh-state.json` 会在启动时自动迁移（`_migrate()`），不用手工处理。
+
+轮换结果存在 `data/refresh-state.json`。**OfficeAce 自己的文件不动**，
+所以 App 那边不受影响；万一 App 也重新登录换了 token，上面那张表会自动切回去。
+
+#### 链子烧穿之后要能自愈（rearm）
+
+`refresh_token` 是一次性的。桌面端和我们各转各的，只要撞一次 `STS5.1806`，
+手里能用的 token 就都没了 —— `pickToken` 会返回 `source: 'none'`，从此这个号
+只能重新登录。而「重新登录」本来就会发一份**全新的** `refresh_token` 下来
+（自助登录、桌面端重登都算）。所以这里补了一条自愈路径：
+
+```text
+rearm(accountId, 新 token)      ← 用新一轮登录发下来的 token 重新上膛
+```
+
+两个容易写错的点，都实测踩过：
+
+| 踩的坑 | 现象 | 正确做法 |
+| --- | --- | --- |
+| 把**新 token**写进 `diskTokenUsed` | 上膛了却仍然报「token 都作废了」 | 那个字段的语义是「磁盘那份**已经被消费掉**了」。锚点必须仍然指向**上一轮消费掉的那份**，新 token 不在死名单里、又跟锚点不一样 → 走动 `pickToken` 的 `disk-renewed` 分支 |
+| 上膛时 `target.profile = {...}` 换了新对象 | 「刚上膛完又报 token 全废」 | 必须**原地改** `profile.refreshToken`。调用方手里攥着的是同一个引用，换成新对象等于白上膛 |
+| 续期成功后不回写轮换出来的 token | **第二轮**就原地判 `none`，一次成功后立刻断 | 续期成功要把 `refresh-state.rotatedToken` 回填到档案上（同样只改内存）。不回写的话下一轮拿老锚点去问，必然判「磁盘那份早用过」 |
+| 「该不该上膛」只看 token 字面是否相等 | 明明还能用也去上膛一次，把链子弄断 | 权威判据是 `pickToken` 会不会判 `none`（`_chainWouldPickNone`），跟 `CredentialRefresher` 内部问的是同一个问题 |
+
+另外 `record()`（每轮成功续期都调）以前是**逐次重建**整条记录的，会把 `rearm`
+留下的 `broken` 标记在第一次成功之后抹掉 —— 表现是「刚自愈完，面板又显示已断链」。
+现在带 `...prev`，并且成功续期本身就会把 `broken` 收掉。
+
+> **回归测试**：`tools/test-rearm-chain.mjs`（23 项）用假 STS 把
+> 「烧穿 → 上膛 → 第一轮 → 第二轮 → 第三轮 → 再烧穿 → 再上膛」整条路径跑一遍，
+> 专门断言「第二轮**不需要**再上膛、且用的是轮换那份」和「回写之后 `pickToken` 不再判 `none`」——
+> 这两条就是上面那两个坑的探针。
+
+`data/refresh-state.json` 里的 `broken` / `brokenReason` 只用来给面板标红，
+**不参与**「该用哪份 token」的判断；链子真断了靠 `pickToken` 返回 `none` 说话。
+
+#### 续期后要回填，否则面板会一直喊「已过期」
+
+续期成功了，但**磁盘档案里的 `expiresAt` 还是昨天那个**——OfficeAce 不会去更新它。
+结果是：请求跑得好好的，账号列表却红着一行「已过期」，`已过期` 统计也是 1 而不是 0，
+看着像坏了。因为面板读的是磁盘档案，而真正在用的是内存里换回来的那套。
+
+解决办法：续期成功时把新凭据**回填进内存里的账号档案**（`AccountStore.applyRefreshedCredential`），
+所有消费者——列表、统计、健康度、连接池——自动看到新值。三条保证：
+
+- **只改内存**，`acc.profile` 上的 `refreshToken` 一个字都不碰（碰了轮换链就断了）
+- 磁盘原始过期时间留在 `diskExpiresAt` 上，面板可以对比着显示「档案那份已过期」
+- `scan()` 之后会自动重新盖上，所以磁盘上那份过期的旧凭据不会把显示带偏
+
+**重启也要对。** 内存里的 `refreshed` 映射一重启就空了，所以启动时会读一遍
+`data/refresh-state.json`，把里面**还没过期**的凭据回灌回去（`RefreshState.list()`）。
+不回灌的话，重启后到下一次续期之间，面板会短暂显示成「已过期」。
+
+健康度也因此多了一个状态词：续期来的凭据显示 **「已自动续期 · 凭据剩 N 小时」**，
+而不是笼统的「有效」，一眼能看出这个号是原装凭据还是我们换过的。
+
+> 顺手修掉的边界：如果一个**已经过期**的凭据被回填进来，它会把手头那条还能用的从映射里挤掉，
+> 下次 `scan()` 就没东西可套、档案又退回磁盘上的旧值。现在过期凭据直接挡在门外。
+
+### 问题二：签到积分当天不领就没了
+
+「每日签到有礼」「登录翻倍礼」这类活动值 **1000 积分**，但 `expired_time` 是**当天 23:59:59**——
+一天不领就作废。面板上有「一键签到」，也会每天定时自动领。
+
+```
+POST {网关}/v1/subscription/bonus/claim
+Content-Type: application/json;charset=utf8
+{}
+```
+
+**坑（也踩过）：body 不能省。** 官方的调用点是「无 body 的 POST」，但实测那样会返回
+`500 OfficeAce.11020001 内部服务器错误`；**必须带上 `Content-Type: application/json` 且 body 给个 `{}`**
+才返回 200。所以这里跟官方写法**故意不一样**。
+
+返回的 `bonus_skus` 就是当前所有奖励活动。同一天重复领不会报错，只是列表不变，
+所以本服务自己记 `data/bonus-claims.json`，当天签过就跳过。
+
+实测一次：
+
+```
+签到前：新用户专属福利 4000  ·  套餐 500                    → 剩 4500
+签到后：新用户专属福利 4000  ·  每日签到有礼 1000
+                            ·  国庆黄金周·登录翻倍礼 1000
+                            ·  套餐 500                    → 剩 6500   ✅ +2000
+```
+
+### 问题三：服务半夜会自己死掉
+
+现象：日志停在某个时刻，端口不通，计划任务状态是 `Ready` 而不是 `Running`。
+原因是 Task Scheduler 自带的 `RestartOnFailure` **只在任务以非零码退出时才触发**——
+进程被误杀、或者崩溃后由处理器正常 `exit(0)`，在计划任务眼里都算「成功」，于是永远不会被拉起。
+
+**现在计划任务的载荷是 `tools/watchdog.ps1`**，不是 `node.exe`：
+
+```
+[2026-10-09 09:11:44] watchdog up: node=D:\软件\OfficeAce\tools\node\node.exe pid=20292
+[2026-10-09 09:11:46] starting server
+[2026-10-09 09:12:02] server exited code= after 17s      ← 这里是我们强杀它做测试
+[2026-10-09 09:12:02] restarting in 3s (fast-exit streak 1)
+[2026-10-09 09:12:06] starting server                     ← 4 秒后自愈
+```
+
+守护做的事：
+
+- 无限循环拉起服务，**不管退出码是什么**；
+- 起之前先看端口上的实例**是不是还活着**（`/admin/api/state` 能通就不动它）；
+  只有真死了才清掉，免得两个守护互相杀对方的服务；
+- **单实例锁**：用命名互斥量 `Global\officeace2api-watchdog` 兜底，
+  第二个守护会直接退出，不会两边对打；
+- 如果连续秒退（配置写错、语法错误）按 3→120 秒退避，不会 100% CPU 空转；
+- 稳定跑满 5 分钟就把退避归零，下次崩溃立刻重启；
+- 计划任务带 **登录时自启** 触发器，重启电脑也会回来。
+
+#### 两个已经踩过的坑
+
+**坑一：`-NoNewWindow` 让 node 和守护共用同一个控制台。**
+控制台一关或者收到 Ctrl+C，两个**同时**死，守护连 `server exited` 都来不及写——
+日志里就是「说了 `starting server`，然后再也没有下文」，退出码 `0xC000013A`
+（`STATUS_CONTROL_C_EXIT`）。现在改成 `-WindowStyle Hidden`，node 有自己独立的控制台，
+守护能活下来做重启。
+
+**坑二：无条件杀端口占用者。**
+原来的 `Clear-Port` 看见谁占着 7864 就杀谁。手动 `service.ps1 start` 一次，
+就会出现两个守护轮流杀对方的服务，表现是「服务每隔几分钟就掉一次，又自己回来」。
+现在先探健康，活着就不碰。
+
+**坑三：两个实例同时写 `data/`，把刚轮换出来的 refresh_token 抹掉。**
+`refresh_token` 是一次性的，两个进程各拿一份内存里的旧 token 去换，
+后写的那个会把先写的成果覆盖掉，表现是「服务好好的，突然要求重新登录」。
+现在服务自己带一把 `data/instance.lock`（**单实例锁**）：
+
+- 锁里记 `pid` + 进程启动时间（Win32 `ToFileTimeUtc`），启动时两边都对上才判定「已有实例在跑」，
+  直接退出并提示端口被占；**pid 被系统复用**的情况靠启动时间差（>15 秒）区分开；
+- 陈旧锁自动接管，不会出现「上次没退干净，这次起不来」；
+- 端口被占（`EADDRINUSE`）时打印明确原因、释放锁、退出码 1，交给守护决定重试；
+- 正常退出、`stop.cmd` 都会清掉锁文件（`stop.cmd` 兜一刀，防止极端时序下的残留）。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\service.ps1 status   # 能看到 payload 是 watchdog 还是裸 node
+powershell -ExecutionPolicy Bypass -File tools\service.ps1 log      # 看守护日志
+```
+
+### 附带：积分熔断
+
+号池选号现在会看一眼余额。**余额见底的号在冷却期（默认 10 分钟）内不再被挑中**，
+省得每个请求都撞一次 403 再重试。两条安全阀：
+
+- **读不到额度时不熔断** —— 查不到余额不代表不能用，绝不因此拦下请求；
+- **全都见底时仍返回一条** —— 宁可试一次，也不要直接 503。
+
+面板「号池」页的凭据行会显示 `积分熔断` 标记；`credits.cooldownOnEmptyCreditsMs: 0` 可关掉。
+
+---
+
+## 八、常见问题
+
+> **一轮系统排查修掉的东西**（都是靠真跑出来的，静态看代码看不出来）。
+> 详细过程写在对应章节里，这里只列结果：
+>
+> | 症状 | 根因 | 现在 |
+> | --- | --- | --- |
+> | 非流式请求偶尔返回**空回复**、`usage` 全是 0，但明明记了成功 | 预读上游时 `decoder.push()` 一次吐出好几个事件（上游常把 role/content/usage/`[DONE]` 塞在同一个 TCP 包里），代码在**第一个**有数据的帧上就 `return` 了，同批剩下的既没进 `events`、也已从解码器缓冲切走 | 整批收完再判断，一帧都不丢 |
+> | 上游明明报错，客户端却收到 200 空回复，而且那个限流的凭据**不冷却** | 「伪 200」的第二种形态：第一帧正常、第二帧才是 `{"error":...}`。错误存进了 `state.error`，但 `build()` 从来不读 | 三种失败形态（中途 error 帧 / 连接被掐 / 没 `[DONE]` 也没 `finish_reason`）都按失败记，池子照常冷却 |
+> | 客户端点「停止」以后，代理还在后台把上游 SSE 读完，白烧 TPM 和积分 | `req.on('close')` 注册在 `await readJson()` **之后** —— 而 `req` 在请求体读完那一刻就 emit 过 close 了（只 emit 一次），监听器永远不触发 | 改挂 `res.on('close')`，而且能区分「客户端走了」和「上游断了」 |
+> | 上游中途断流 → 客户端拿到 200 + 半截 SSE，没有 `[DONE]`，一直转圈 | `finally` 直接 `res.end()`，异常路径还会跳过 `handle.cleanup()` | 补一个错误帧 + `[DONE]`；异常转成返回值，池子照实记失败 |
+> | 上游 200 之后卡住不吐数据 → 客户端永久转圈，也不重试 | 预读超时被 `break` 掉，落到和「真读到帧」同一个 `return` 形状 | 预读超时明确当失败，走重试/报错 |
+> | `n>1` 只返回第一个 choice | 累加器写死 `chunk.choices[0]`，`build()` 也只组装一条 | 按 `choice.index` 分别累积 |
+> | 拼错的模型名返回 502 | 注册表不校验，直接当可重试错误连打上游 3 次 | 立即 **404 `model_not_found`**，一次上游都不打 |
+> | 一个 `max_tokens:-5` 的错误请求要白重试 3 次、多等 4 秒 | 确定性 400 也被当可重试；`unsupportedParam` 正则里的 `invalid.*(param\|field\|argument\|type)` 会命中「参数值不合法」 | 严格匹配 `unsupported/not support/unrecognized`；400 直接短路，392ms 返回上游原话 |
+> | 发坏 JSON 或 `"null"` 给管理接口 → **HTTP 500** | 69 个入口全中：`readJson` 抛普通 Error 被兜底成 500；`JSON.parse("null")` 返回 `null` 后属性访问抛 TypeError | 坏 JSON → **400**（带 `BAD_JSON`），非对象体归一成 `{}`，请求体过大 → 413 |
+> | 面板上「按模型冷却」开关改了没反应，要重启 | config.json 里存的是 `credentialPerModelCooldown`，而 `setCooldowns()` 读的是 `perModelCooldown` —— 静默失效 | 两个键名都认 |
+> | 面板「测试账号」把会回错误体的凭据报成「在线」 | 判的是 `verdict.kind !== 'error'`，而 `classifyUpstream()` **根本没有 `kind` 这个键** → 恒为 `undefined` → 条件恒真 | 按 `rateLimited/authFailed/badRequest` 合成真实的 `kind` |
+> | 公网端点关着 TLS 校验 | `http.mjs` 的 `insecure` 默认值是 `true`，而轮询华为云授权码那处没显式传参 | 默认改 `false`（本机自签的那些调用点本来就都显式传了 `true`）；跨 host 跳转不再转发 `Authorization` |
+> | 一次 DPAPI 失败之后**所有**账号档案都读不出来了 | 一个「一置就再也下不来」的 `unavailable` 布尔值，且没有任何地方重置它 | 改成「连续失败计数 + 60s 冷却」，一个坏 blob 不影响别的档案 |
+> | 面板「下次到期」显示 1970 / Invalid Date | `Math.min()` 收到空数组返回 `Infinity`，序列化成 `null` | 空数组按 0 处理 |
+> | 签到接口的 `firstTimeToday` 永远是 `false` | `beforeRec` 和 `rec` 是同一个对象，先写 `rec.days[day]` 再读它 | 写之前先把判断做掉 |
+> | 单个账号反复点「签到」会真的反复打接口 | `claimBonus(accountId, { force })` 的 `force` 声明了从没用过，幂等判断只在 `claimAll` 里 | `claimBonus` 自己也判「今天签过没」 |
+> | **点「删除」既没删掉、也没停用，反而会把一个已经停用的号重新启用** | `remove()` 里写的是 `this.meta.disabled.filter((x) => x !== key)` —— 那是 `setEnabled()` 里「**启用**」那一半，方向抄反了 | 见下面「移除一个本机账号」 |
+> | 手敲 `http://127.0.0.1:7864/admin/`（末尾多个斜杠）整个面板变成一行 401 JSON | 面板的 `api()` 用的是相对路径 `admin/api/xxx`，在 `/admin` 下解析成 `/admin/api/xxx`；在 `/admin/` 下就变成 `/admin/admin/api/xxx` —— 落到兜底的鉴权分支 | 两条都修：`api()` 统一补成绝对路径；服务端把 `/admin/` 也当成面板入口 |
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 浏览器 `ERR_CONNECTION_REFUSED` / `127.0.0.1 拒绝了我们的连接请求` | 服务没在跑。双击 `start.cmd`（或 `install-autostart.cmd` 一劳永逸）。最常见的诱因：进程是在命令行窗口里用 `node src/index.mjs` 起的，窗口一关进程就跟着死 |
+| 进程老是莫名消失 | 用 `install-autostart.cmd` 注册计划任务，让 Windows 任务计划服务托管，不再挂靠在终端会话下 |
+| 日志里 `SyntaxError: Unexpected token '||='` | 选到了太老的 Node（14/16）。删掉 `data\node.txt` 再启动，`find-node.cmd` 会重新挑一个 ≥ 20 的；也可以手工把 node.exe 全路径写进 `data\node.txt` |
+| `/healthz` 显示 `credentials: 0` | 本机没有 `models.json`。打开 OfficeAce 登录并发一条消息，再 `POST /v1/refresh` |
+| 面板上点「改名 / 停用 / 删除 / 测活」没反应，右下角红字 `缺少 id` | **已修**（`api()` 助手没把 `json` 翻译成请求体，所有 POST 都在发空 body）。如果你的版本还是这样，说明 `src/admin.html` 是旧的——它在浏览器里跑，改完记得**硬刷新**（Ctrl+F5） |
+| 地址栏末尾多打一个斜杠 `/admin/`，面板就变成一行 401 JSON | **已修**（面板的相对路径在带斜杠的地址下会多拼一层 `admin/`）。旧版本去掉那个斜杠即可 |
+| 点「删除」弹「已移除（已记入忽略名单）」而不是「已删除」 | 正常。这个号是本机 OfficeAce 文件里发现的，删不掉（删了下一轮扫描又回来），所以记进忽略名单——效果一样，而且不动 OfficeAce 的文件。想找回来去「配置」页最下面的「已忽略的账号」点恢复 |
+| 点「删除」之后号还在列表里，而且变成启用了 | 老版本的 bug（`remove()` 把「启用」当成了「停用」）。升级到含 `ignored` 名单的版本即可，见「移除一个本机账号」那一节 |
+| `429` + `ModelArts.81111` / `81114` | 上游对该模型做了 TPM 限流（多用户共享配额）。等 20s 自动冷却结束，或换 `glm-5.2`、`deepseek-v4-flash-0731` 等其它模型 |
+| `401` + `APIG.1009 AppKey or AppSecret is invalid` | 凭据过期/换了网关分片。在 OfficeAce 里重新登录（或重启客户端）触发刷新，本服务 45s 内自动跟进；也可手工 `POST /v1/refresh` |
+| 积分页显示「读不到」/ `这个号缺少 security_token` | 该号的临时 AK/SK 过期了（默认 24 小时）。**正常情况下会自动续期**，面板上会标「凭据已自动续期」。若续期也失败，说明 `refresh_token` 也过期了（30 天），去 OfficeAce 重新登录一次 |
+| 状态列写「可用 · 待续期」，但积分还是读不到 | 这是**两个不同的凭据**：转发走的是不会失效的 `Authorization: Basic`（`model_app_key:model_app_secret`，写在 `models.json` 里），积分走的是 24 小时的临时 AK/SK。所以这种号**照常能跑模型**，只是积分/签到读不出来。点「导入账号」重登一次就会自动接上 |
+| 重登了，积分还是读不到 / 还是提示「refresh_token 已经全部作废」 | 已修。早期版本有三个坑：① 上膛时把**新** token 当成「已经消费过」写进锚点，`pickToken` 于是判 `None`；② 续期成功后没把**轮换出来的** token 回写档案，导致第二轮就原地断链；③ `diskTokenUsed` 被轮换值带偏，每轮都触发一次多余的「重新上膛」，90 秒烧掉 5 份一次性 token。三条都补上了，并且 `/admin/api/credits/refresh-credential` 每次都会自己判断要不要上膛 —— 重登之后几秒内自动恢复，不用重启。回归测试：`tools/test-rearm-chain.mjs`（36 项） |
+| **导入账号走完了，日志也写了「自助登录完成」，但列表里什么都没多** | 已修。那个号之前在**忽略名单**里（你点过删除），而 `scan()` 里每个调用点都会拿 `ensure(id)` 挡一道，被忽略的 ID 一律跳过 —— 于是刚登录进来的号被立刻抹掉。现在 `attachOauthAccount()` 会把同一个 ID 的 `ignored` / `disabled` 一起撤掉并落盘。<br>语义上也该这样：**用户亲手登录一次，就是最明确的「我要用这个号」**。忽略名单是给「扫盘扫出来、你不想看到」那种准备的，不能反过来把用户的显式操作也挡掉。原来的别名会保留。 |
+| 面板点「续期凭据」提示 `STS5.1806 the refresh token has been used` | `refresh_token` 是一次性的，说明用的那份已经被消费过了。**新版会自动换用下一份**（磁盘那份 → 轮换那份 → 放弃）；只有两份都作废了才会明确提示「需要重新登录一次」，不会反复撞同一个错。如果提示就是这个，去 OfficeAce 重新登录，或用面板的「自助登录」重新授权一个号 |
+| 续期按钮点了没反应 / 提示跳过 | 当前凭据还有效（剩余 > 10 分钟）时会主动跳过，省下一次性的 `refresh_token`。想强制换就传 `{"force": true}` |
+| 一键签到提示「今天已经签过了，没有新的积分可领」 | 正常。同一个活动每天只能领一次，重复领不会加分，返回的列表不变 |
+| 签到返回 `500 OfficeAce.11020001` | 请求没带 body。这个接口**必须**带 `Content-Type: application/json` 且 body 给 `{}`——官方的调用点省了 body，但那样会被服务端判错。本服务已经按带 body 的方式发 |
+| 积分页显示 `APIG.0624 Unsupported signature algorithm` | 网关只认 `V11-HMAC-SHA256`，说明签名走错了分支。确认 `src/quota.mjs` 里 `/v1/subscription*` 用的是 `signV11` 而不是 `signV4` |
+| 积分显示的总数比预期少 | 已过期（`expired_time` 早于当前时间）的套餐条目和奖励活动**不计入**。每日签到类奖励每天 23:59:59 清零重发，属于正常 |
+| 明明没怎么用，积分一直在掉 | 查「近 30 天消耗」的走势条和「今天」那一列，配合「调用记录」页对照是哪个客户端在刷。也可以停掉某个号，只留主力号 |
+| 某个号突然不出话了 | 看「号池」页该行有没有「积分熔断」标记——余额见底会被冷却 10 分钟。看 `logs\server.log` 里的 `积分余额偏低` 告警 |
+| 服务半夜自己死了 / 端口不通 | 现在不会了：计划任务的载荷是 `tools\watchdog.ps1`，进程没了 4 秒内自动拉起。用 `service.ps1 log` 看守护日志；`service.ps1 status` 的 `payload` 一行会告诉你守护装没装 |
+| `service.ps1 status` 显示 `payload: node.exe directly (no auto-restart!)` | 计划任务是旧版装的。跑一次 `service.ps1 install -Autostart` 换成守护版本 |
+| `400` + `unsupported thinking type` | 该模型不支持 `thinking`，本服务已自动剥离重试；若客户端每次都带，可在 `models.alias` 之外直接别传该参数 |
+| `404 Model not found` | 上游没有这个模型，`GET /v1/models` 看准确 ID（大小写敏感，例如 `Kimi-K2.6` 与 `kimi-k2.6` 是两个） |
+| 客户端连不上 | 确认监听地址是 `127.0.0.1`、端口没被占（`stop.cmd` 会清理 7864）；客户端填的是 `http://127.0.0.1:7864/v1` |
+| 模型"卡住"很久没首字 | 上游大模型首字延迟 2~15s 属正常；`deepseek-v4.1-flash` 这类带思考的模型更慢 |
+
+排障三板斧：
+
+```bash
+node tools/dump-cred.mjs     # 本机发现到什么凭据/模型
+node tools/list-models.mjs   # 服务对外暴露了什么
+node tools/smoke-test.mjs    # 真正打一发
+```
+
+管理服务的命令（等价于那几个 .cmd 双击）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\service.ps1 status
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\service.ps1 install -Autostart
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\service.ps1 uninstall
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\service.ps1 restart
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\service.ps1 log      # 看守护 + 服务日志尾部
+```
+
+`status` 会同时告诉你：计划任务装没装、**载荷是守护还是裸 node**、上次运行结果、服务在不在、对外暴露了多少模型。
+
+---
+
+## 九、可选：打包成单文件 exe
+
+不想装 Node 又想给别人用，可以用 Node 官方 SEA 或 `@yao-pkg/pkg`：
+
+```bash
+# 方案 A：pkg（最省事）
+npm i -g @yao-pkg/pkg
+pkg src/index.mjs --targets node22-win-x64 -o oa2api.exe
+
+# 方案 B：Node 22+ 的 SEA（体积更小，步骤略多，见官方文档 single-executable-applications）
+```
+
+打完的 exe 放到本目录运行即可，`config.json` / `logs/` / `data/` 仍从当前目录读取。
+
+---
+
+## 十、注意事项
+
+- 默认只监听 `127.0.0.1`，本机自用。要给别人用得改 `listen.host` 为 `0.0.0.0`，**同时务必**
+  把 `apiKeys` 换成随机长串，否则别人可以白嫖你账号的额度。
+- 上游额度是跟着 OfficeAce 账号走的，别拿去做高并发压测，容易把账号打限流。
+- 凭据存在 `models.json` 里，本服务只读不写，不会影响 OfficeAce 客户端本身。

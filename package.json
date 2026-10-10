@@ -1,0 +1,17 @@
+{
+  "name": "officeace2api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "OfficeAce(果办) 模型反代 —— 把本机 OfficeAce 客户端的模型网关暴露成标准 OpenAI /v1 接口",
+  "main": "src/index.mjs",
+  "scripts": {
+    "start": "node src/index.mjs",
+    "dev": "node --watch src/index.mjs",
+    "dump": "node tools/dump-cred.mjs",
+    "smoke": "node tools/smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

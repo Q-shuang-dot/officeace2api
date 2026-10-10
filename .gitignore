@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────
+# ⚠️ data/ 里是运行期状态，绝对不能提交：
+#    data/refresh-state.json      ← 明文临时 AK/SK（华为云凭据）
+#    data/oauth-accounts.json     ← 华为云账号 ID / 用户名
+#    data/bonus-claims.json       ← 签到记录
+#    data/quota-history.json      ← 积分历史
+#    data/usage.json              ← 调用记录与 token 消耗
+#    data/accounts.json           ← 账号别名 / 停用 / 忽略名单
+# 程序首次启动会自动建目录并写默认值，clone 下来不需要这些文件。
+# ─────────────────────────────────────────────────────────────
+data/*
+!data/.gitkeep
+
+# 本机配置：含 apiKeys、自定义上游地址/鉴权头，首次启动按默认值自动生成
+config.json
+config.local.json
+config.*.local.json
+
+# 日志
+logs/
+*.log
+
+# 单实例锁 / pid / node 路径探测结果
+*.pid
+data/instance.lock
+
+# 依赖（本项目零依赖，留着防手滑）
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

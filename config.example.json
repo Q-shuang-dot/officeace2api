@@ -1,0 +1,104 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 7864
+  },
+  "apiKeys": [
+    "sk-officeace"
+  ],
+  "upstream": {
+    "autoDiscover": true,
+    "refreshSeconds": 45,
+    "baseUrl": "",
+    "authorization": "",
+    "extraHeaders": {},
+    "alwaysStreamUpstream": true,
+    "includeUsage": true,
+    "timeoutSeconds": 600,
+    "maxRetries": 3,
+    "retryBackoffMs": 1200
+  },
+  "discover": {
+    "installDirs": []
+  },
+  "models": {
+    "alias": {},
+    "hidden": [],
+    "extra": [],
+    "minMaxTokens": 1024,
+    "reasoningModels": []
+  },
+  "quota": {
+    "cooldownOnRateLimitMs": 20000,
+    "cooldownOnAuthErrorMs": 300000,
+    "credentialPerModelCooldown": true
+  },
+  "credits": {
+    "enabled": true,
+    "ttlSeconds": 300,
+    "autoRefreshSeconds": 900,
+    "timeoutMs": 20000,
+    "region": "cn-southwest-2",
+    "gateway": "",
+    "history": true,
+    "autoRefreshCredentials": true,
+    "refresh": {
+      "tokenUrl": "https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens",
+      "clientId": "pdp5_for_agentarts",
+      "timeoutMs": 25000
+    },
+    "autoClaim": {
+      "enabled": true,
+      "hour": 9,
+      "minute": 5
+    },
+    "cooldownOnEmptyCreditsMs": 600000,
+    "lowBalanceWarn": 200,
+    "autoRenewCredentials": true,
+    "renewLeadRatio": 0.25,
+    "renewBeforeHours": 3
+  },
+  "log": {
+    "level": "info",
+    "keepRecent": 300
+  },
+  "admin": {
+    "enabled": true,
+    "token": ""
+  },
+  "accounts": {
+    "enabled": true,
+    "rescanSeconds": 60,
+    "onlyEnabled": true
+  },
+  "auth": {
+    "appApis": [],
+    "pollSeconds": 3,
+    "stateTtlMinutes": 10
+  },
+  "register": {
+    "enabled": true,
+    "registerUrl": "https://reg.huaweicloud.com/registerui/register.html",
+    "concurrency": 1,
+    "maxAttempts": 3,
+    "autoAuth": true,
+    "tickSeconds": 5,
+    "sms": {
+      "provider": "manual",
+      "fixedCode": "",
+      "http": {
+        "urlTemplate": "",
+        "project": "",
+        "method": "GET",
+        "codePath": "data.code",
+        "headers": {},
+        "timeoutMs": 20000
+      }
+    },
+    "activation": {
+      "autoActivate": true,
+      "promotionCodes": [],
+      "waitBeforeAuthMs": 8000
+    }
+  }
+}
