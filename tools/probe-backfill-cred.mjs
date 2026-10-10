@@ -37,11 +37,16 @@ const quota = new QuotaService({ accounts: store, config: cfg.credits || {}, ref
 /** 把一个账号的网关 Basic 凭据取出来（不落盘，先只看能不能取到） */
 async function fetchGatewayKey(accountId) {
   const acc = store.get(accountId);
-  if (!acc) return { error: '账号不存在' };
-  if (acc.credentials?.length) return { error: '已经有凭据了，不需要补', already: true };
+  if (!acc) return { status: 'missing', error: '账号不存在' };
+  // 已经有凭据是**好事**（不用补），所以它不能算 error —— 以前这里返回
+  // `{error:'已经有凭据了', already:true}`，下面统一按 error 打了个 ✗，
+  // 结果"一切正常"的号在输出里长得像失败。
+  if (acc.credentials?.length) {
+    return { status: 'already', message: `已经有 ${acc.credentials.length} 条凭据了，不需要补` };
+  }
 
   const got = await quota.resolveCredential(accountId);
-  if (got.error) return { error: `拿不到临时 AK/SK：${got.error}`, stage: 'credential' };
+  if (got.error) return { status: 'failed', error: `拿不到临时 AK/SK：${got.error}`, stage: 'credential' };
 
   const url = `${CONTROL_PLANE}/v1/claw/client-permission-validate`;
   const headers = signV4({
@@ -52,15 +57,16 @@ async function fetchGatewayKey(accountId) {
   });
   const res = await quota.fetchJson(url, { method: 'GET', headers });
   if (!res.ok || !res.json) {
-    return { error: `控制面 HTTP ${res.status}：${res.json?.error_msg || res.text.slice(0, 120)}`, stage: 'validate' };
+    return { status: 'failed', error: `控制面 HTTP ${res.status}：${res.json?.error_msg || res.text.slice(0, 120)}`, stage: 'validate' };
   }
   const mi = res.json.model_info || res.json.subscription?.model_info || res.json.modelInfo || null;
   const ai = mi?.model_auth_info || null;
   if (!ai?.model_app_key || !ai?.model_app_secret) {
-    return { error: '控制面响应里没有 model_auth_info（这个号可能还没开通服务）', stage: 'validate', keys: Object.keys(res.json) };
+    return { status: 'failed', error: '控制面响应里没有 model_auth_info（这个号可能还没开通服务）', stage: 'validate', keys: Object.keys(res.json) };
   }
   const host = String(mi.model_api_url_base || '').replace(/^https?:\/\//, '').replace(/\/+$/, '');
   return {
+    status: 'filled',
     appKey: String(ai.model_app_key),
     appSecret: String(ai.model_app_secret),
     baseUrl: host ? `https://${host}/v2` : '',
@@ -77,7 +83,9 @@ for (const id of store.ids()) {
   console.log(`\n  【${acc.short}】${acc.label}  现有凭据 ${acc.credentials?.length ?? 0}`);
   const r = await fetchGatewayKey(id);
   results[id] = r;
-  if (r.error) {
+  if (r.status === 'already') {
+    console.log(`     ✓ ${r.message}`);
+  } else if (r.status === 'missing' || r.status === 'failed') {
     console.log(`     ✗ ${r.error}`);
   } else {
     console.log(`     ✓ 取到 key（临时凭据来源 ${r.credentialSource}）`);
@@ -89,9 +97,15 @@ for (const id of store.ids()) {
 
 /* 真的用补出来的那条凭据打一发，证明它可用 */
 console.log('\n══ 拿补出来的凭据实打一发上游 ══');
-const target = Object.entries(results).find(([, r]) => !r.error && r.baseUrl);
+const target = Object.entries(results).find(([, r]) => r.status === 'filled' && r.baseUrl);
 if (!target) {
-  console.log('  （没有可试的账号）');
+  // 全都是 already 也属于正常：号本来就有凭据，只是没什么可"补"的
+  const statuses = Object.values(results).map((r) => r.status);
+  console.log(
+    statuses.length && statuses.every((s) => s === 'already')
+      ? '  （所有号本来就有凭据，没有需要补的 —— 这是正常结果）'
+      : '  （没有可试的账号）',
+  );
 } else {
   const [id, r] = target;
   const authorization = `Basic ${Buffer.from(`${r.appKey}:${r.appSecret}`).toString('base64')}`;

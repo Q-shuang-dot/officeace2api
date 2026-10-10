@@ -134,7 +134,6 @@ console.log('\n【3】常用参数是否被尊重');
   const cases = [
     ['temperature=0（应该更确定）', { temperature: 0 }],
     ['top_p=0.1', { top_p: 0.1 }],
-    ['max_tokens=1（必须只有很少输出）', { max_tokens: 1 }],
     ['stop=["\\n"]', { stop: ['\n'], max_tokens: 40 }],
     ['presence_penalty / frequency_penalty', { presence_penalty: 0.5, frequency_penalty: 0.5, max_tokens: 30 }],
     ['n=1', { n: 1, max_tokens: 16 }],
@@ -146,17 +145,39 @@ console.log('\n【3】常用参数是否被尊重');
     });
     const txt = await res.text();
     if (res.status === 200) {
-      const j = JSON.parse(txt);
-      const ct = j.usage?.completion_tokens ?? 0;
-      if (name.startsWith('max_tokens=1')) {
-        if (ct <= 1) ok(`被尊重：${name}`, `completion_tokens=${ct}`);
-        else wa(`没被尊重：${name}`, `返回了 ${ct} 个 token`);
-      } else ok(`被接受：${name}`);
+      ok(`被接受：${name}`);
     } else {
-      // 有些参数上游可能不认识，那属于"能自动剥离"的范畴
       let msg = txt.slice(0, 160);
       try { msg = JSON.parse(txt).error?.message || msg; } catch { /* 保持原文 */ }
       wa(`报错：${name}`, `HTTP ${res.status} ${msg}`);
+    }
+  }
+
+  /**
+   * `max_tokens` 是这条链路上最容易被误解的参数。
+   *
+   * 上游把它当成**推理 + 正文的总预算**（不按它截断正文），而反代对 ≥16 的值
+   * 会追加 1024 的推理预算。所以能断言的只有"小值不被越权放大"这一条：
+   *   max_tokens=1 → 输出必须还是 1 个 token（正文空 + finish_reason=length 是对的，
+   *   那正是客户端要的"最小输出"），绝不能变成一整句话。
+   * 给 ≥16 时正文应该出得来 —— 这是追加预算的目的。
+   */
+  console.log('      ── max_tokens 语义（反代会对 ≥16 的值追加推理预算）──');
+  for (const mt of [1, 5, 16, 64]) {
+    const { res } = await post('/v1/chat/completions', {
+      model: MODEL, max_tokens: mt, messages: [{ role: 'user', content: '说一句二十个字的问候' }],
+    });
+    const j = await res.json();
+    const c = String(j.choices?.[0]?.message?.content || '');
+    const ct = j.usage?.completion_tokens ?? 0;
+    console.log(`        给 ${String(mt).padEnd(3)} → 输出 ${String(ct).padStart(4)} token，正文 ${String(c.length).padStart(2)} 字符，finish=${j.choices?.[0]?.finish_reason}`);
+    if (mt < 16) {
+      if (ct <= mt) ok(`max_tokens=${mt} 没被越权放大`, `输出 ${ct} token`);
+      else wa(`max_tokens=${mt} 被放大了`, `输出 ${ct} token —— 小值应该原样透传`);
+    } else if (c.length) {
+      ok(`max_tokens=${mt} 拿到了正文（追加推理预算生效）`, `${ct} token`);
+    } else {
+      wa(`max_tokens=${mt} 正文为空`, '追加预算没起作用，或这次推理特别长（重试应该兜住）');
     }
   }
 }

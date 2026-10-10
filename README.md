@@ -240,7 +240,9 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
-- `node tools/test-admin.mjs` —— 控制台接口自测
+- `node tools/test-admin.mjs` —— 控制台接口自测（215 项）
+- `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（47 项）
+- `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（41 项）
 
 ---
 

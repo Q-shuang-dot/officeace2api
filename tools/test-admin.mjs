@@ -119,6 +119,102 @@ console.log('\n[模型别名]');
   const clean = await call('/admin/api/models', { method: 'POST', body: { alias: {}, hidden: [], extra: [] } });
   if (clean.status === 200) ok('别名已清空');
   else bad('清空别名', `HTTP ${clean.status}`);
+
+  /**
+   * 反向对照：写别名**不许把 config.models 里别的键抹掉**。
+   *
+   * 这里以前写的是 `config.models = { alias, hidden, extra }`，于是每在面板上
+   * 改一次模型设置，就把 `hideUnavailable` / `minMaxTokens` / `reasoningModels`
+   * / `probeOnStartup` 这些键全删掉，而且立刻落盘到 config.json。
+   * 表现是"改了个别名，推理预算的功能就没了"，没有任何报错。
+   */
+  const st = await call('/admin/api/state');
+  const mm = st.json?.config?.models || {};
+  const keepKeys = ['hideUnavailable', 'minMaxTokens', 'reasoningModels', 'minMaxTokensByModel', 'probeOnStartup'];
+  const missing = keepKeys.filter((k) => !(k in mm));
+  if (!missing.length) ok('写别名没弄丢 config.models 的其它键', keepKeys.join(' / '));
+  else bad('写别名把 config.models 的键抹掉了', `丢了 ${missing.join(', ')}，剩下的键 ${Object.keys(mm).join(', ')}`);
+  if (mm.minMaxTokens === 1024) ok('minMaxTokens 的值也还在', String(mm.minMaxTokens));
+  else bad('minMaxTokens 的值被改了/丢了', String(mm.minMaxTokens));
+
+  // 再写一次别的组合，确认还是留得住（防止只修了第一条路径）
+  await call('/admin/api/models', { method: 'POST', body: { alias: { 'x-check': 'glm-5.2' }, hidden: [], extra: [] } });
+  const st2 = await call('/admin/api/state');
+  if (st2.json?.config?.models?.minMaxTokens === 1024 && 'hideUnavailable' in (st2.json?.config?.models || {})) {
+    ok('反复写别名仍然留得住');
+  } else {
+    bad('反复写别名丢键', JSON.stringify(st2.json?.config?.models));
+  }
+  await call('/admin/api/models', { method: 'POST', body: { alias: {}, hidden: [], extra: [] } });
+}
+
+console.log('\n[别名改了之后，旧的「模型不行」标记要作废]');
+{
+  /**
+   * 真踩到的坑：`gpt-4o` 先指一个打不通的模型，于是被打上"不行"的标记；
+   * 之后把别名改指能用的模型 —— 标记还留着，`gpt-4o` 照样从 `/v1/models`
+   * 里消失，而它明明是好的。
+   *
+   * 「这个模型不行」是**相对当时那份目录**得出的结论，名字被重新定义之后
+   * 必须作废。这里用两步复现：先让别名指向一个确定打不通的模型，把标记打上，
+   * 再改指能用的，然后检查 `gpt-4o` 有没有回来。
+   */
+  const before = await call('/v1/models', { key: 'sk-officeace' });
+
+  // ① 别名指向一个打不通的模型，然后真打一次，把"不行"的标记打上
+  await call('/admin/api/models', { method: 'POST', body: { alias: { 'gpt-4o': 'glm-5.3-zx' }, hidden: [], extra: [] } });
+  const hit = await fetch(base + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sk-officeace' },
+    body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }], max_tokens: 8 }),
+  });
+  const hitDoc = await hit.json().catch(() => ({}));
+  /**
+   * ⚠️ 这里**不检查别名会不会进 modelsUnavailable**。
+   *
+   * 别名是用户自己写的一句映射，"打不通"应该怪它指向的那个模型，不该把用户
+   * 打的那串名字拉黑 —— 否则用户改一下映射方向（`gpt-4o` 从坏的模型改指好的）
+   * 会发现别名还是被挡着。所以 `listUnavailableModels()` 只报真实模型名。
+   *
+   * 但要**硬性保证报错是干净的**：必须是 400 `model_not_available`，
+   * 绝不是 `upstream_failed`（那意味着把"模型不行"误判成了"账号坏了"，
+   * 会把整条凭据冷却 5 分钟 —— 这是本项目踩过好几次的坑）。
+   */
+  if (hit.status === 400 && hitDoc?.error?.code === 'model_not_available') {
+    ok('别名指向打不通的模型时，干净地回 400 model_not_available', '没把账号误判成坏了');
+  } else if (hit.ok) {
+    ok('别名指向打不通的模型（这次居然通了，跳过）');
+  } else {
+    bad('别名指向打不通的模型时报错不干净', `HTTP ${hit.status} code=${hitDoc?.error?.code} ${String(hitDoc?.error?.message).slice(0, 120)}`);
+  }
+
+  // ② 改指能用的模型 —— gpt-4o 必须能用，且立刻回到 /v1/models
+  await call('/admin/api/models', { method: 'POST', body: { alias: { 'gpt-4o': 'glm-5.2' }, hidden: [], extra: [] } });
+  const after = await call('/v1/models', { key: 'sk-officeace' });
+  const ids = (after.json?.data || []).map((m) => m.id);
+  if (ids.includes('gpt-4o')) ok('别名改指能用的模型后，gpt-4o 立刻在列表里', '旧标记已作废');
+  else bad('别名改指能用的模型后 gpt-4o 还是消失的', '旧目录的「模型不行」标记没被清掉');
+  const afterState = await call('/admin/api/state');
+  if ((afterState.json?.health?.modelsUnavailable || []).includes('gpt-4o')) {
+    bad('modelsUnavailable 里挂着别名 gpt-4o', '别名不该被当成模型拉黑');
+  } else {
+    ok('modelsUnavailable 里不挂别名（只挂真实模型名）');
+  }
+  // 改指之后真打一发，确认真的能用
+  const hit2 = await fetch(base + '/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer sk-officeace' },
+    body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: '回一个字' }], max_tokens: 8 }),
+  });
+  const doc2 = await hit2.json().catch(() => ({}));
+  if (hit2.ok && doc2?.model === 'glm-5.2') ok('改指之后 gpt-4o 真的能打通', `model=${doc2.model}`);
+  else bad('改指之后 gpt-4o 打不通', `HTTP ${hit2.status} ${JSON.stringify(doc2).slice(0, 140)}`);
+
+  // 还原
+  await call('/admin/api/models', { method: 'POST', body: { alias: {}, hidden: [], extra: [] } });
+  const restored = await call('/v1/models', { key: 'sk-officeace' });
+  if ((restored.json?.data || []).length === (before.json?.data || []).length) ok('模型列表已还原');
+  else bad('模型列表没还原', `${(before.json?.data || []).length} → ${(restored.json?.data || []).length}`);
 }
 
 console.log('\n[刷新与统计]');
@@ -369,8 +465,43 @@ console.log('\n[刷新与统计]');
   const b = signV11({ method: 'GET', url, credential, region: 'cn-southwest-2' });
   const v4 = signV4({ method: 'GET', url, credential });
   const sigOf = (h) => /Signature=([0-9a-f]+)/.exec(h.Authorization || '')?.[1] || '';
-  if (sigOf(a) && sigOf(a) === sigOf(b)) ok('V11 签名稳定', `Signature=${sigOf(a).slice(0, 12)}…`);
-  else bad('V11 签名稳定', '两次结果不一致');
+  /**
+   * ⚠️ 这里以前直接断言 `sigOf(a) === sigOf(b)`，会**偶发失败**：
+   * `signV11` 会把 `X-Sdk-Date` 算进待签串，而它是**秒级**的（`sdkDate()` 取整到秒）。
+   * 两次调用如果正好跨过一秒边界，签名就不一样 —— 不是代码错了，是断言写错了
+   * （实测踩到过一次，几率大约千分之一）。
+   *
+   * 正确的测法是锁住「同一个秒内必须逐字节一致」，再用不同秒的输入去证明
+   * 时间真的进了签名。这样既**更严**（逐字节比对），又不会偶发。
+   */
+  const sameSec = sigOf(a) === sigOf(b);
+  if (sameSec) {
+    ok('V11 签名稳定（同一秒内逐字节一致）', `Signature=${sigOf(a).slice(0, 12)}…`);
+  } else {
+    // 跨秒了：退一步，拿同一秒显式重签一次，证明是时间戳而不是随机性
+    const date = a['X-Sdk-Date'] || a['x-sdk-date'];
+    const a2 = signV11({ method: 'GET', url, credential, region: 'cn-southwest-2', headers: { 'X-Sdk-Date': date } });
+    const b2 = signV11({ method: 'GET', url, credential, region: 'cn-southwest-2', headers: { 'X-Sdk-Date': date } });
+    if (sigOf(a2) && sigOf(a2) === sigOf(b2)) {
+      ok('V11 签名稳定（固定时间戳后一致 —— 刚才那次是跨秒了）', `Signature=${sigOf(a2).slice(0, 12)}…`);
+    } else {
+      bad('V11 签名稳定', `固定时间戳后仍不一致：${sigOf(a2).slice(0, 12)} vs ${sigOf(b2).slice(0, 12)}`);
+    }
+  }
+  // 反向对照：时间戳必须真的进签名，否则请求会被服务端拒（防重放）。
+  //
+  // ⚠️ 钉时间必须走 `date` 参数，**不能靠传 `headers`**：`putCommonHeaders()`
+  //    是**无条件**调 `setHeader(headers, 'X-Sdk-Date', sdkDate())` 的，所以
+  //    不管传大写还是小写都会被覆盖成"现在"——第一版就踩了这个坑，
+  //    两条签名都是"现在"，当然一样，看起来像"时间戳没进签名"的假故障。
+  const at = (d) => signV11({ method: 'GET', url, credential, region: 'cn-southwest-2', sdkDateOverride: d });
+  const t1 = at('20200101T000000Z');
+  const t2 = at('20200101T000001Z');
+  const dateKey = Object.keys(t1).find((k) => k.toLowerCase() === 'x-sdk-date');
+  if (dateKey && t1[dateKey] === '20200101T000000Z') ok('V11 能钉住 X-Sdk-Date（走 date 参数）', dateKey);
+  else bad('V11 钉不住 X-Sdk-Date', `实际 ${JSON.stringify(t1[dateKey])}`);
+  if (sigOf(t1) !== sigOf(t2)) ok('V11 签名把时间戳算进去了（防重放）');
+  else bad('V11 签名把时间戳算进去了（防重放）', '换一秒签名居然没变');
   if (a.Authorization.startsWith('V11-HMAC-SHA256 Credential=AKTEST/') && /cn-southwest-2\/apic/.test(a.Authorization)) {
     ok('V11 CredentialScope 正确', 'AKTEST/<日期>/cn-southwest-2/apic');
   } else {
@@ -997,6 +1128,59 @@ console.log('\n[刷新与统计]');
   // 点开始要真的开新标签页 —— 这是「点一下就登录」的关键
   if (/window\.open\(r\.url,\s*"_blank"/.test(html)) ok('面板：拿到链接会自动开新标签页');
   else bad('面板：拿到链接会自动开新标签页', '没找到 window.open(r.url, "_blank")');
+
+  /**
+   * 模型管理的黄色提示条（#mdlUnavail）：文案必须和 server 的实际行为对上。
+   *
+   * 这条是补一个真实事故的：`/v1/models` 的行为从「全列出来」改成
+   * 「默认藏掉打不通的」之后，面板上的提示还写着"它们仍然留在 /v1/models 里
+   * （客户端配置不用改）" —— **面板在骗用户**，而且没有任何测试会发现。
+   *
+   * 取代码块用「renderModels 函数体」，不能用定长窗口 —— 窗口太短会把要断言的
+   * 东西截在框外（实测踩过：一个 2600 字的窗口刚好够不到要断言的关键字，
+   * 于是误报"没告诉用户怎么改回来"）。而且注释里也提到了同一句反面文案，
+   * 所以断言前先剥掉注释行，否则注释会被当成正文。
+   */
+  const unavailSrc = (() => {
+    const fnStart = html.indexOf('function renderModels()');
+    if (fnStart < 0) return '';
+    // 终点取"下一个顶层 function"，不要用注释当界碑 —— 注释在文件里的顺序
+    // 和函数定义不一定一致（实测这儿就踩过：`模型管理` 那条注释在函数**前面**）。
+    const rest = html.slice(fnStart + 22);
+    const nextFn = rest.search(/\nfunction [a-zA-Z_$]/);
+    const body = nextFn >= 0 ? rest.slice(0, nextFn) : rest.slice(0, 20000);
+    return body
+      .replace(/\/\*[\s\S]*?\*\//g, '') // 剥块注释
+      .replace(/^\s*\/\/.*$/gm, ''); // 剥行注释
+  })();
+  if (unavailSrc) {
+    const b = unavailSrc;
+    if (/已从[\s\S]{0,80}\/v1\/models/.test(b) || /不列进下面的表/.test(b)) {
+      ok('面板：模型提示条说的和实际行为一致（已经藏掉了）');
+    } else {
+      bad('面板：模型提示条还在说"仍然留在 /v1/models 里"', '文案和 server.mjs 的 hideUnavailable 行为不一致');
+    }
+    if (/mdlUnavail/.test(b) && /modelsUnavailable/.test(b)) ok('面板：提示条读的是 health.modelsUnavailable');
+    else bad('面板：提示条没读 health.modelsUnavailable');
+    if (/btnProbeModels/.test(b) && /重探一遍/.test(b)) ok('面板：提示条上有「重探一遍」按钮');
+    else bad('面板：提示条上没有重探按钮');
+    // api() 只认 json，写 body 会静默发空 body（见下面那条 api() 测试）
+    if (/admin\/api\/models\/probe/.test(b) && /json:\s*\{\}/.test(b)) ok('面板：重探按钮打的是正确的接口和 body 写法');
+    else bad('面板：重探按钮的调用写法不对', '必须用 json:{} 且打 admin/api/models/probe');
+    if (/method:\s*"POST"/.test(b)) ok('面板：重探按钮用的是 POST');
+    else bad('面板：重探按钮没用 POST');
+    if (/toast\([^)]*,\s*"(ok|err)"\)/.test(b)) ok('面板：重探结果有 toast 反馈（且 kind 是 ok/err）');
+    else bad('面板：重探结果没有正确的 toast');
+    // 打不通的模型默认不列进下面的表，但要有开关能翻出来看（否则用户无从核对）
+    if (/mdlShowUnavail/.test(b) && /mdlToggleUnavail/.test(b)) ok('面板：打不通的模型默认不列，但有开关能翻出来');
+    else bad('面板：打不通的模型没有「翻出来看」的开关');
+  } else {
+    bad('面板：能找到模型提示条那块代码', '没匹配到 renderModels() 的边界');
+  }
+
+  // #mdlUnavail 这个容器本身得存在，否则上面那块代码永远不执行
+  if (ids.has('mdlUnavail')) ok('面板：#mdlUnavail 容器存在');
+  else bad('面板：#mdlUnavail 容器存在', '缺 id="mdlUnavail"');
 }
 
 {

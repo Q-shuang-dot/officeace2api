@@ -91,8 +91,13 @@ function setHeader(headers, name, value) {
   headers[name] = value;
 }
 
-function putCommonHeaders(headers, { url, credential, contentType }) {
-  setHeader(headers, 'X-Sdk-Date', sdkDate());
+function putCommonHeaders(headers, { url, credential, contentType, sdkDateOverride }) {
+  // `sdkDateOverride` 只给测试用：`X-Sdk-Date` 是**秒级**的，两次签名如果跨过
+  // 一秒边界就不一样，测试没法稳定断言"同一输入出同一签名"。传进来一个固定值
+  // 就能钉住。
+  // 注意大小写不敏感：靠 `headers` 传 `X-Sdk-Date` / `x-sdk-date` 都会被这里的
+  // `setHeader` 覆盖掉，所以想钉住就**必须走这个参数**。
+  setHeader(headers, 'X-Sdk-Date', sdkDateOverride || sdkDate());
   if (credential.securityToken) setHeader(headers, 'X-Security-Token', credential.securityToken);
   setHeader(headers, 'Host', new URL(url).host);
   if (contentType) setHeader(headers, 'Content-Type', contentType);
@@ -100,9 +105,9 @@ function putCommonHeaders(headers, { url, credential, contentType }) {
 }
 
 /** 标准 SDK-HMAC-SHA256：密钥就是 SK 本身 */
-export function signV4({ method, url, credential, bodyText = '', headers = {}, contentType }) {
+export function signV4({ method, url, credential, bodyText = '', headers = {}, contentType, sdkDateOverride }) {
   const out = { ...headers };
-  putCommonHeaders(out, { url, credential, contentType });
+  putCommonHeaders(out, { url, credential, contentType, sdkDateOverride });
   const norm = normalizeHeaders(out);
   const names = Object.keys(norm).sort();
   const cr = canonicalRequest(method, new URL(url), norm, names, sha256Hex(bodyText));
@@ -116,9 +121,9 @@ export function signV4({ method, url, credential, bodyText = '', headers = {}, c
  * V11-HMAC-SHA256：APIG 的区域作用域签名。
  * 派生密钥那一步是华为特有的：HMAC(HMAC(AK, SK), scope + 0x01)，取 32 字节。
  */
-export function signV11({ method, url, credential, region = DEFAULT_REGION, bodyText = '', headers = {}, contentType }) {
+export function signV11({ method, url, credential, region = DEFAULT_REGION, bodyText = '', headers = {}, contentType, sdkDateOverride }) {
   const out = { ...headers };
-  putCommonHeaders(out, { url, credential, contentType });
+  putCommonHeaders(out, { url, credential, contentType, sdkDateOverride });
   const norm = normalizeHeaders(out);
   const names = Object.keys(norm).sort();
   const date = norm['x-sdk-date'];

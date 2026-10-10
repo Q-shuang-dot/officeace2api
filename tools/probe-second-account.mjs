@@ -55,13 +55,28 @@ console.log('\n  ── ④ client-permission-validate 原始响应（看有没�
 try {
   const { QuotaService } = await import('../src/quota.mjs');
   const { AccountStore } = await import('../src/accounts.mjs');
-  const { RefreshState } = await import('../src/refresh.mjs');
+  // 注意：本探针**故意不**导入/实例化 RefreshState，见下面 store.refreshState 那段注释。
   const { loadConfig } = await import('../src/config.mjs');
 
   const cfg = loadConfig(new URL('../config.json', import.meta.url).pathname.replace(/^\//, ''));
   const store = new AccountStore({ dataFile: new URL('../data/accounts.json', import.meta.url).pathname.replace(/^\//, '') });
   store.oauthFile = new URL('../data/oauth-accounts.json', import.meta.url).pathname.replace(/^\//, '');
-  store.refreshState = new RefreshState(new URL('../data/refresh-state.json', import.meta.url).pathname.replace(/^\//, ''));
+  /**
+   * ⚠️ 这里**故意不**把 RefreshState 接进来（只给一个只读替身）。
+   *
+   * 原来接的是真的 `data/refresh-state.json`，有两个问题：
+   *   ① 服务器正把那份状态放在内存里管着、还要定期回写，探针再开一个
+   *      `QuotaService` 去写同一个文件，就是两个写者抢一个落盘点；
+   *   ② 探针读到的是一份**快照**，服务器内存里早就换过好几轮的 refresh_token
+   *      它不知道，于是会报一句很吓人的
+   *      "refresh_token 已被使用过（STS5.1806）" —— 而那一刻服务器的
+   *      `/healthz` 其实是 `credentials:2 / accountsUsable:2`，完全健康。
+   *      这种"探针自己造成的假故障"最费时间。
+   *
+   * 想知道真实的凭据健康度就看 `/healthz` 和 `/admin/api/state`（下面的 ①/② 段
+   * 就是这么取的）；这里只用 store 的只读档案，不碰任何落盘点。
+   */
+  store.refreshState = null;
   store.scan();
 
   const q = new QuotaService({ accounts: store, config: cfg.credits || {}, refreshState: store.refreshState });
@@ -69,12 +84,60 @@ try {
   //    不是模型网关。上一次探针把 `resolveGateway()` 的返回值当基址用，于是打到了
   //    modelgw-… 上拿到 401 —— 那是我的探针写错了，不是账号的问题。
   const CONTROL_PLANE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
+  // 先问服务的真实状态：探针自己的判断只当参考，服务说的才算
+  let live = null;
+  try {
+    const r = await fetch('http://127.0.0.1:7864/admin/api/state', {
+      headers: { Authorization: 'Bearer sk-officeace' },
+      signal: AbortSignal.timeout(10000),
+    });
+    live = await r.json();
+  } catch { /* 服务没起就算了，下面按探针自己的判断走 */ }
+  // `/healthz` 才是汇总那几个数字的地方（`/admin/api/state` 的 health 里没有）
+  let hz = null;
+  try {
+    hz = await (await fetch('http://127.0.0.1:7864/healthz', { signal: AbortSignal.timeout(10000) })).json();
+  } catch { /* 同上 */ }
+  if (live) {
+    console.log(`\n  ── 服务自报（以这个为准）──`);
+    if (hz) {
+      for (const k of ['status', 'credentials', 'accounts', 'accountsUsable', 'defaultModel', 'modelsUnavailable', 'creditsRemaining']) {
+        if (hz[k] !== undefined) {
+          const v = Array.isArray(hz[k]) ? `[${hz[k].length} 个]` : hz[k];
+          console.log(`     healthz.${k} = ${JSON.stringify(v)}`);
+        }
+      }
+    }
+    console.log(`     号池（转发真正用的凭据）:`);
+    for (const e of live.pool || []) {
+      console.log(`        #${e.index} ok=${e.ok} fail=${e.fail} 冷却=${e.cooldownMsLeft || 0}ms source=…${String(e.source || '').slice(-46)}`);
+    }
+  }
   for (const id of store.ids()) {
     const acc = store.get(id);
     console.log(`\n  【${acc.short}】${acc.label}`);
     const got = await q.resolveCredential(id);
-    console.log(`     resolveCredential: ${got.error ? '✗ ' + got.error : '✓ source=' + got.source}`);
-    if (got.error) continue;
+    // 注意这里**不用 ✗**：① 续期失败是**常见且无害**的（见下面那段），
+    // 用 ✗ 会被当成故障，也会被回归脚本的 "✗ 计数" 误判成套件失败。
+    console.log(`     resolveCredential: ${got.error ? '△ ' + got.error : '✓ source=' + got.source}`);
+    if (got.error) {
+      /*
+       * ⚠️ 别把这一句读成"这个号坏了"。凭据有两套，探针看的是**另一套**：
+       *
+       *   ① 临时 AK/SK —— 有效期 24 小时，用 refresh_token 续期。**只用来做
+       *      控制面签名**（查积分额度、查模型权限、查网关地址）。探针问的就是它。
+       *   ② MaaS 网关的 `Basic base64(app_key:app_secret)` —— 从
+       *      `models.json` / `oauth-accounts.json` 里读出来的，**不过期**。
+       *      **转发请求用的是这一套。**
+       *
+       * 所以 ① 续期失败只影响"看得见多少积分"，不影响"能不能转发"。
+       * 号池里的凭据就是 ②（看 `/admin/api/state` 的 `pool[].source`），
+       * 池子 ok 在涨就说明这个号在正常干活。
+       */
+      console.log('     ※ 这是①临时凭据（只管查额度），续期用的 refresh_token 是磁盘快照、可能已经换过。');
+      console.log('       转发用的是②网关 Basic 凭据（不过期），以下面「服务自报」的号池 ok 为准。');
+      continue;
+    }
     const url = `${CONTROL_PLANE}/v1/claw/client-permission-validate`;
     const { signV4 } = await import('../src/quota.mjs');
     const headers = signV4({ method: 'GET', url, credential: got.credential, contentType: 'application/json;charset=utf8' });
