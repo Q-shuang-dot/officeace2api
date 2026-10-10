@@ -1,0 +1,10 @@
+blank_issues_enabled: false
+
+contact_links:
+  - name: 💬 使用问题 / 求助
+    url: https://github.com/Q-shuang-dot/officeace2api/blob/main/README.md
+    about: 启动失败、接不上客户端等问题，先看 README 的「常见问题」和 docs/技术笔记.md
+
+  - name: 🔐 报告安全漏洞
+    url: https://github.com/Q-shuang-dot/officeace2api/security/advisories/new
+    about: 凭据泄漏、鉴权绕过等安全问题请私下报告，不要开公开 Issue

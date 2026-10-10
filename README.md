@@ -305,6 +305,24 @@ officeace2api/
 
 ---
 
+## 九、参与贡献
+
+欢迎改进本项目！两条路：
+
+- **只想反馈问题 / 提建议** → 直接开
+  [Issue](https://github.com/Q-shuang-dot/officeace2api/issues/new/choose)，
+  有对应模板，不用写代码。
+- **想改代码** → 先读 **[CONTRIBUTING.md](CONTRIBUTING.md)**，再 Fork → 建分支 → 提 PR。
+
+> ⚠️ 动手前务必确认三条硬规矩：**零 npm 依赖**、**`.cmd` 必须纯 ASCII 无 BOM**、
+> **`data/` 和 `logs/` 不许进提交**。详见 CONTRIBUTING.md 第一节。
+
+> 🔐 发现的是**安全漏洞**（凭据泄漏、鉴权绕过等）请走
+> [私下报告](https://github.com/Q-shuang-dot/officeace2api/security/advisories/new)，
+> 不要开公开 Issue。
+
+---
+
 ## License
 
 [MIT](LICENSE)

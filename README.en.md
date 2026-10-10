@@ -321,6 +321,26 @@ officeace2api/
 
 ---
 
+## Contributing
+
+Contributions are welcome. Two paths:
+
+- **Report a problem or suggest a feature** → open an
+  [issue](https://github.com/Q-shuang-dot/officeace2api/issues/new/choose).
+  Templates are provided and no coding is required.
+- **Submit code** → read **[CONTRIBUTING.md](CONTRIBUTING.md)** first (Chinese),
+  then fork, branch and open a pull request.
+
+> ⚠️ Three hard rules before you start: **zero npm dependencies**, **`.cmd` files must be
+> pure ASCII with no BOM**, and **`data/` and `logs/` must never be committed**.
+> See section 1 of CONTRIBUTING.md.
+
+> 🔐 For **security vulnerabilities** (credential leaks, auth bypass, etc.) use
+> [private vulnerability reporting](https://github.com/Q-shuang-dot/officeace2api/security/advisories/new)
+> instead of a public issue.
+
+---
+
 ## Other languages
 
 - [简体中文](README.md) (default)
