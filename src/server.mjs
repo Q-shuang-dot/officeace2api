@@ -431,8 +431,13 @@ export function createApp(ctx) {
       }
       const doc = await res.json();
       const list = Array.isArray(doc?.data) ? doc.data : Array.isArray(doc) ? doc : [];
+      const before = registry.ids().join(',');
       registry.setUpstream(list);
       log.info('上游模型列表已更新', { count: list.length });
+      // 目录变了 → 「模型不行」的旧结论作废（见 pool.clearModelRejections 的注释）
+      if (registry.ids().join(',') !== before) {
+        pool.clearModelRejections((n) => log.info('模型目录变了，已清掉旧的「模型不行」标记', { cleared: n, reason: 'upstream-catalog' }));
+      }
       return true;
     } catch (err) {
       log.warn('拉取上游模型列表异常', { error: String(err?.message || err) });
@@ -672,7 +677,7 @@ export function createApp(ctx) {
           return null;
         }
 
-        pool.markOk(cred, model);
+        markModelUsable(cred, model);
         usage.record({
           model,
           apiKey,
@@ -822,7 +827,7 @@ export function createApp(ctx) {
         continue;
       }
 
-      pool.markOk(cred, model);
+      markModelUsable(cred, model);
       usage.record({
         model,
         apiKey,
@@ -931,9 +936,13 @@ export function createApp(ctx) {
             defaultModel: registry.defaultModel(),
             version: ctx.version,
             startedAt: new Date(ctx.startedAt).toISOString(),
-            // 目录里有、但一条凭据都用不了的模型（上游 81004/81009 拒过）。
+            // 目录里有、但打不通的模型。两个来源合并：
+            //   ① 主动探测（开机后台跑一遍，写进 data/model-probe.json）
+            //   ② 学习到的（某条模型被池里所有凭据拒过）
             // 面板拿它来提醒用户「这些别试了」，见 admin.html 的 #mdlUnavail。
-            modelsUnavailable: pool.unavailableModels(),
+            modelsUnavailable: listUnavailableModels(),
+            // 探测本身的状态，面板用来显示「上次探测于 …」
+            modelProbe: ctx.modelProbe?.stats?.() || null,
           },
           config,
           pool: creds,
@@ -1007,14 +1016,58 @@ export function createApp(ctx) {
         return;
       }
 
+      /**
+       * 手动重探模型可用性。
+       *
+       * 面板上「模型管理」里那个"重探一遍"按钮用。会真的打上游（每个模型
+       * max_tokens:1，成本几乎为零），但慢的模型要等它推理完，所以要 1~2 分钟。
+       * 用 `?force=1` 忽略 TTL 与"号池没变"两个跳过条件。
+       */
+      if (pathname === '/admin/api/models/probe' && req.method === 'POST') {
+        if (!ctx.modelProbe) {
+          sendJson(res, 503, { error: { message: '模型探测没启用（config.models.probeOnStartup: false）', type: 'not_available' } });
+          return;
+        }
+        const force = new URL(req.url, 'http://x').searchParams.get('force') === '1';
+        const r = await ctx.modelProbe.probe({ force: force || req.method === 'POST' });
+        sendJson(res, 200, {
+          ok: true,
+          ...r,
+          stats: ctx.modelProbe.stats(),
+        });
+        return;
+      }
+
       if (pathname === '/admin/api/models' && req.method === 'POST') {
         const body = await readJson(req);
+        const idsBefore = registry.ids().join(',');
         registry.apply({
           alias: body.alias && typeof body.alias === 'object' ? body.alias : config.models.alias,
           hidden: Array.isArray(body.hidden) ? body.hidden : config.models.hidden,
           extra: Array.isArray(body.extra) ? body.extra : config.models.extra,
         });
+        /**
+         * 别名/目录改了 → 「模型不行」的旧结论作废。
+         *
+         * 这是个**真踩到的坑**：`gpt-4o` 先指向一个打不通的模型（比如 `glm-5.3-zx`），
+         * 于是 `gpt-4o` 被打上"不行"的标记；之后把别名改指向能用的 `glm-5.2` ——
+         * 标记还留着，`gpt-4o` 照样从 `/v1/models` 里消失，而它明明是好的。
+         * 名字被重新定义之后，基于旧定义得出的结论必须作废。
+         */
+        if (registry.ids().join(',') !== idsBefore) {
+          pool.clearModelRejections((n) =>
+            log.info('模型别名改过了，已清掉旧的「模型不行」标记', { cleared: n, reason: 'alias-edit' }),
+          );
+        }
+        // ⚠️ 必须用展开把**其它键原样带回去**。
+        //
+        // 这里以前写的是 `config.models = { alias, hidden, extra }` —— 于是每次在
+        // 面板上改一次模型设置，就把 config.models 里别的键（`hideUnavailable`、
+        // `minMaxTokens`、`reasoningModels`、`probeOnStartup`…）全抹掉了，
+        // 而且**立刻写进 config.json**（下面有 saveConfig）。表现就是
+        // "改了次别名，推理预算的功能就没了"，且没有任何报错。
         config.models = {
+          ...config.models,
           alias: { ...registry.alias },
           hidden: [...registry.hidden],
           extra: [...registry.extra],
@@ -1568,10 +1621,10 @@ export function createApp(ctx) {
           creditsRemaining: cv ? cv.remaining : null,
           // 只算「启用且读到额度」的号，才是真正能花的额度
           creditsRemainingEnabled: cv ? cv.remainingEnabled : null,
-          // ⚠️ 目录里有、但一个号都用不了的模型（上游 81009 名字不认 / 81004 没权限）。
-          //    实测过 33 个里有 24 个是这种 —— 但 /v1/models 照样全列出来，
-          //    用户照着一个个试，试一个错一个。这个数就是用来拆穿那件事的。
-          modelsUnavailable: pool.unavailableModels(),
+          // ⚠️ 目录里有、但一个号都用不了/打不通的模型（上游 81009 名字不认 / 81004 没权限）。
+          //    实测过 34 个里有 23 个是这种 —— 它们默认不出现在 /v1/models 里，
+          //    这个字段就是"到底藏了什么"的账本。
+          modelsUnavailable: listUnavailableModels(),
           uptimeMs: Date.now() - ctx.startedAt,
         });
         return;
@@ -1592,23 +1645,31 @@ export function createApp(ctx) {
 
       if (pathname === '/v1/models' && req.method === 'GET') {
         /**
-         * 默认把「一条凭据都用不了」的模型从列表里去掉。
+         * 默认把「打不通」的模型从列表里去掉。
          *
-         * 实测两个号的时候 33 个里只有 9 个真的能用，其余 24 个上游回
-         * `81009 Invalid model` / `81004 没权限`。以前它们照原样列出来，
-         * 用户照着一个个试、试一个错一个 —— 而且 24 个模型在客户端下拉框里
-         * 排着队，看着就像反代挂了。
+         * 两个来源合并：
+         *   ① 主动探测（tools/probe-reasoning-models.mjs 用的同一招，开机后台跑一遍）
+         *      —— 覆盖"开机后第一次打开下拉框"这个场景，那会儿还没有任何学习记录
+         *   ② 学习到的（某个模型被所有凭据都拒过）
          *
-         * 只是**从列表里去掉**，不是删掉：直接指定名字打过来仍然会走到上游，
-         * 报的仍然是那条 400 `model_not_available`（诊断靠得住）。
-         * 想看到全量就设 `models.hideUnavailable: false`（面板永远显示全量并有提示）。
+         * 实测两个号：目录 34 个里只有 11 个真的能打通。
+         * 以前它们照原样列出来，客户端照着一个一个试、试一个错一个。
          */
         const list = registry.toOpenAiList();
-        const hidden = config.models?.hideUnavailable !== false ? pool.unavailableModels() : [];
+        const hidden = new Set();
+        if (config.models?.hideUnavailable !== false) {
+          if (ctx.modelProbe) {
+            for (const m of ctx.modelProbe.unavailable) hidden.add(m);
+            // 池子学习到的新结论也并进来，免得要等下次探测
+            ctx.modelProbe.noteLearned(pool.unavailableModels());
+          }
+          for (const m of pool.unavailableModels()) hidden.add(m);
+        }        const hiddenList = [...hidden].filter((m) => list.some((x) => x.id === m));
         sendJson(res, 200, {
           object: 'list',
-          data: hidden.length ? list.filter((m) => !hidden.includes(m.id)) : list,
-          ...(hidden.length ? { x_hidden_unavailable: hidden } : {}),
+          data: hiddenList.length ? list.filter((m) => !hidden.has(m.id)) : list,
+          ...(hiddenList.length ? { x_hidden_unavailable: hiddenList } : {}),
+          ...(hiddenList.length ? { x_hidden_note: '这些模型上游对本服务的账号没有权限；想让客户端也看到全量就设 config.models.hideUnavailable: false' } : {}),
         });
         return;
       }

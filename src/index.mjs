@@ -24,6 +24,7 @@ import { LoginFlow } from './oauth.mjs';
 import { RegisterQueue } from './register.mjs';
 import { QuotaService } from './quota.mjs';
 import { backfillGatewayCredentials } from './gatewayKey.mjs';
+import { ModelProbe } from './modelProbe.mjs';
 
 const VERSION = '1.0.0';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -323,6 +324,15 @@ if (pool.size === 0) {
   log.warn('未发现任何凭据：请先登录并运行一次 OfficeAce 桌面端（发起一次对话），再重启本服务');
 }
 
+const modelProbe = new ModelProbe({
+  dataFile: path.join(ROOT, 'data', 'model-probe.json'),
+  config: config.models || {},
+  pool,
+  registry,
+  log,
+  usage,
+});
+
 const ctx = {
   config,
   pool,
@@ -333,6 +343,7 @@ const ctx = {
   loginFlow,
   register: registerQueue,
   credits,
+  modelProbe,
   startedAt: Date.now(),
   version: VERSION,
   logFile: LOG_FILE,
@@ -348,6 +359,27 @@ const ctx = {
 };
 
 const { server, refreshUpstreamCatalog } = createApp(ctx);
+
+/**
+ * 模型可用性探测：开机后台跑一遍，之后按 TTL 周期性重跑。
+ *
+ * 为什么要开机就跑：客户端是在**打开下拉框那一刻**读 `/v1/models` 的，
+ * 而"学习式"的黑名单那时候还是空的 —— 必须提前探出来，不能等用户踩到。
+ *
+ * 为什么放在后台（`setTimeout` 而不是 `await`）：探测要 1~2 分钟
+ * （`glm-5.1`/`glm-5.2` 单个就要 10~14 秒），不能让服务启动卡在那里。
+ * 探测结果同时落盘，下次开机能直接读回来。
+ */
+if (config.models?.probeOnStartup !== false) {
+  setTimeout(() => {
+    modelProbe.probe().catch((err) => log.warn('开机模型可用性探测失败', { error: String(err?.message || err) }));
+  }, 15000).unref?.();
+}
+const probeIntervalMs = Math.max(600, Number(config.models?.probeIntervalSeconds) || 21600) * 1000; // 默认 6 小时
+const modelProbeTimer = setInterval(() => {
+  modelProbe.probe().catch((err) => log.warn('周期性模型可用性探测失败', { error: String(err?.message || err) }));
+}, probeIntervalMs);
+modelProbeTimer.unref?.();
 
 // 周期任务：刷新本机凭据 + 上游模型列表
 const refreshMs = Math.max(10, Number(config.upstream?.refreshSeconds) || 45) * 1000;

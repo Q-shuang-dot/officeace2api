@@ -124,6 +124,31 @@ export class CredentialPool {
   }
 
   /**
+   * 清空所有「这个模型不行」的标记。
+   *
+   * 模型目录**改了**（面板上增删别名、上游目录刷新）之后必须调一次，因为
+   * 那些标记是**相对旧目录**学到的，留在新目录上会以两种方式说谎：
+   *
+   *   ① 某个模型名其实已经从目录里去掉了 → 标记成了没人管的垃圾；
+   *   ② 某个名字被**重新定义**了（典型：同一个别名先指向 A、后来改指 B）
+   *      → 旧标记会把新指向也一起判死。实测踩过：`gpt-4o` 先指 `glm-5.3-zx`
+   *      （打不通），改指 `glm-5.2` 之后 `gpt-4o` 照样从 `/v1/models` 里消失，
+   *      而它本来是好的。
+   *
+   * 「这个模型不行」是**结论**，不是事实 —— 结论的前提变了就得作废。
+   * 清掉之后最多让客户端多试一次，试错一次会拿到准确的 400，代价可以接受。
+   */
+  clearModelRejections(onClear) {
+    let cleared = 0;
+    for (const e of this.entries) {
+      cleared += e.rejectedModels?.size || 0;
+      e.rejectedModels?.clear();
+    }
+    if (cleared && typeof onClear === 'function') onClear(cleared);
+    return cleared;
+  }
+
+  /**
    * 池里**每一条凭据都拒绝过**的模型。
    *
    * 这些就是「本地目录里有、但一个号都用不了」的模型 —— 实测一号+二号的时候
