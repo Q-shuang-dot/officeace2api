@@ -25,6 +25,10 @@ Continue、Cursor、Dify、沉浸式翻译、OpenAI SDK……
 
 ### 控制台（`http://127.0.0.1:7864/admin`）
 
+> 控制台默认带**面板口令**校验（首次启动自动生成，见下面的「快速开始」）。
+> 打开时地址要带 `?token=`，或者请求头带 `x-admin-token`。
+> 想退回"本机自用不校验"，把 `config.json` 里的 `admin.token` 改成 `""` 即可。
+
 | 菜单 | 干什么 |
 |---|---|
 | **账号池** | 多账号的凭据、剩余积分、健康度一览；一键测试 / 改名 / 停用 / 删除 |
@@ -73,27 +77,51 @@ cd officeace2api
 [OK] service is up
 
   OpenAI base : http://127.0.0.1:7864/v1
-  Admin panel : http://127.0.0.1:7864/admin
-  API key     : sk-officeace
+  Admin panel : http://127.0.0.1:7864/admin?token=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  API key     : see "apiKeys" in config.json  (default: sk-officeace)
   Log file    : logs\server.log
 ```
+
+> 控制台地址后面那串 `?token=` 是**面板口令**，首次启动自动生成并写进 `config.json`。
+> 别丢掉它 —— 没有它打开面板只会看到 401。（`open-panel.cmd` 会自动带上，不用手记。）
 
 > ⚠️ **不要直接在命令行里 `node src/index.mjs` 然后就关窗口** —— 窗口一关进程跟着死，
 > 浏览器会 `ERR_CONNECTION_REFUSED`。要临时用就双击 `start.cmd`。
 
-### 4. 打开控制台
+### 4. 加账号（**第一步是必须做的**）
 
-双击 **`open-panel.cmd`**，或直接访问 <http://127.0.0.1:7864/admin>
+刚 clone 下来是**一个号都没有**的，反代转发不了任何请求。两条路：
+
+**① 自己登录（推荐，不需要装 OfficeAce 桌面端）**
+
+打开控制台 →「账号池」页 → 点 **「换个账号登录」** → 浏览器里用你自己的账号登录一次。
+
+**② 已经装了 OfficeAce 桌面端的话**
+
+登录它、随便发一条对话，然后双击 `stop.cmd` 再 `start.cmd` —— 它会自动把凭据抠出来。
+（`discover.mjs` 会扫 `~\.office-claw\` 和各盘的 `OfficeAce\.office-claw`，
+所以装了桌面端的人通常启动完就已经有号了。）
+
+**③ 兜底：手工导入**
+
+你手上已经有 `baseUrl` + `Authorization` 的话，到「账号池」页点「导入账号」直接贴进去。
+
+> 控制台里能随时看到每个号的**剩余积分**和健康度。余额见底的号会被自动跳过（积分熔断）。
+
+### 5. 打开控制台
+
+双击 **`open-panel.cmd`** —— 它会从 `config.json` 现算地址（含面板口令），
+服务没起还会先自动拉起来。
 
 > ⚠️ 用 **`127.0.0.1`**，别用 `localhost`。服务只监听 IPv4，而浏览器解析 `localhost`
 > 会优先试 IPv6 的 `[::1]`，那里没人接 → 直接连接被拒。
 
-### 5. 接入客户端
+### 6. 接入客户端
 
 | 项 | 填什么 |
 |---|---|
 | Base URL | `http://127.0.0.1:7864/v1` |
-| API Key | `sk-officeace`（在控制台「配置」里改） |
+| API Key | `sk-officeace`（**给别人用之前请在控制台「配置」里改掉**） |
 | Model | 点「接入信息」一键复制，或看 `/v1/models` |
 
 ---
@@ -247,6 +275,8 @@ officeace2api/
 - `node tools/diag-empty-window.mjs` —— 撞「推理吃光预算、正文为空」那个窗口
 - `node tools/diag-upstream-limits.mjs` —— 摸上游的两条上限：messages 5000 条 / token 窗口
 - `node tools/diag-body-too-large.mjs` —— 超大请求体应该回 413 而不是 429
+- `node tools/diag-admin-auth.mjs` —— 核对面板鉴权（不带 / 对 / 错口令，以及 ?token= 那条路）
+- `node tools/diag-portability.mjs` —— 看 data/ 里的凭据形态（判断能不能拷贝给别人）
 
 ---
 

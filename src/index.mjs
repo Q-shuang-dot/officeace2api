@@ -9,7 +9,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './config.mjs';
+import { loadConfig, saveConfig, ensureAdminToken } from './config.mjs';
 import { configureLogger, createLogger } from './logger.mjs';
 import { discover } from './discover.mjs';
 import { CredentialPool } from './pool.mjs';
@@ -65,6 +65,15 @@ if (args.help) {
 
 const config = loadConfig(args.config);
 if (args.port) config.listen.port = args.port;
+/*
+ * 面板口令为空就补一个（并写回 config.json）。
+ *
+ * 空口令 = 面板和 `/admin/api/*` **完全不校验**，本机自用无所谓，
+ * 给别人用就是门户大开。所以第一次启动自动生成一个。
+ * 想关掉：把 config.json 里 `admin.token` 手动改回 `""`。
+ */
+const generatedAdminToken = ensureAdminToken(config);
+if (generatedAdminToken) saveConfig(config);
 const LOG_FILE = path.join(ROOT, 'logs', 'server.log');
 // 单实例锁：一个数据目录只能有一个服务在跑，见 acquireInstanceLock()
 const LOCK_FILE = path.join(ROOT, 'data', 'instance.lock');
@@ -321,7 +330,40 @@ backfillGatewayCredentials({ accounts: accountStore, credits })
   .catch((err) => log.warn('开机补网关凭据异常', { error: err.message }));
 
 if (pool.size === 0) {
-  log.warn('未发现任何凭据：请先登录并运行一次 OfficeAce 桌面端（发起一次对话），再重启本服务');
+  /*
+   * 零凭据时的引导。
+   *
+   * ⚠️ 原文是「请先登录并运行一次 OfficeAce 桌面端（发起一次对话），再重启本服务」——
+   * 这对着**装了桌面端、只是还没登录**的人是对的，但对"拉了这个项目、根本没装
+   * OfficeAce"的人（也就是只想自己加个号的人）就成了死胡同：他照做也没得做。
+   *
+   * 必须把「面板里自助登录」摆在第一位 —— 那条路不需要桌面端，
+   * 只要一个华为云账号。桌面端那条降为备选，说清它还额外要求跑一次对话。
+   */
+  log.warn('未发现任何凭据：打开控制台点「换个账号登录」即可（不需要 OfficeAce 桌面端）');
+  console.log('');
+  console.log('  ────────────────────────────────────────────────');
+  console.log('  ⚠️  现在一个可用的号都没有，反代没法转发任何请求。');
+  console.log('     下一步（二选一）：');
+  console.log('       ① 打开控制台 → 「号池」页 → 点「换个账号登录」，用你自己的');
+  console.log('          华为云账号登录一次就行（不需要装 OfficeAce 桌面端）。');
+  console.log('       ② 或者如果你已经装过 OfficeAce：登录它、发一次对话，');
+  console.log('          然后重启本服务，会自动把凭据抠出来。');
+  if (config.admin?.token) {
+    /*
+     * 面板地址不能直接拿 `listen.host` 拼 —— 监听 `0.0.0.0` 时那个地址
+     * 浏览器打不开（0.0.0.0 是"所有网卡"的意思，不是能访问的主机名）。
+     * 本机自己开面板一律用 127.0.0.1，监听宽了就再补一句提示。
+     */
+    const p = config.listen.port;
+    console.log(`     控制台地址：http://127.0.0.1:${p}/admin?token=${config.admin.token}`);
+    const host = String(config.listen.host || '');
+    if (host && !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+      console.log(`     （服务监听在 ${host}，别人也能连；面板地址换成他的机器 IP + :${p} 即可）`);
+    }
+  }
+  console.log('  ────────────────────────────────────────────────');
+  console.log('');
 }
 
 const modelProbe = new ModelProbe({
@@ -734,12 +776,33 @@ if (args.dump) {
 }
 
 server.listen(config.listen.port, config.listen.host, () => {
-  const base = `http://${config.listen.host}:${config.listen.port}`;
+  /*
+   * `base` 用来拼"给人点"的地址，所以不能直接拿 `listen.host` 拼 ——
+   * 监听 `0.0.0.0` 时那是个"所有网卡"的记号，浏览器打不开。
+   * 本机自己开面板一律显示 127.0.0.1；监听宽了就另外提示一句。
+   */
+  const host = String(config.listen.host || '');
+  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
+  const base = `http://${loopback ? '127.0.0.1' : host}:${config.listen.port}`;
   log.info(`officeace2api v${VERSION} 已启动`, { base });
   console.log('');
-  console.log(`  控制台     ${base}/admin`);
+  /*
+   * 面板地址后面带 ?token= —— 面板前端是从 URL 的 query 里读这个口令的
+   * （`const TOKEN = new URLSearchParams(location.search).get("token")`），
+   * 不带就是空口令、每条 `/admin/api/*` 都会被回 401。
+   * 所以这里把完整可点的地址打出来，省得人去翻 config.json。
+   */
+  const adminToken = config.admin?.token || '';
+  console.log(`  控制台     ${base}/admin${adminToken ? `?token=${adminToken}` : ''}`);
   console.log(`  OpenAI 基址 ${base}/v1`);
   console.log(`  API Key    ${(config.apiKeys || []).join(', ') || '(不校验)'}`);
+  if (generatedAdminToken) {
+    console.log(`  面板口令   ${generatedAdminToken}  ← 刚生成，已写进 config.json`);
+  } else if (adminToken) {
+    console.log(`  面板口令   ${adminToken}（在 config.json 的 admin.token，可改）`);
+  } else {
+    console.log('  面板口令   (空 = 面板不校验，只适合本机自用)');
+  }
   console.log(`  默认模型   ${registry.defaultModel()}`);
   console.log(`  可用模型   ${registry.ids().length} 个`);
   console.log(`  凭据       ${pool.size} 条`);
@@ -751,6 +814,25 @@ server.listen(config.listen.port, config.listen.host, () => {
     console.log('  积分额度   正在后台拉取…（打开控制台「号池」页可看）');
   }
   console.log('');
+
+  /*
+   * 监听地址不是回环，就等于「别人也能连上来」。
+   *
+   * 这一步纯粹是**把风险说到明处**：默认 127.0.0.1 只有本机能连，
+   * 改成 0.0.0.0（或内网 IP）之后，这个端口上的一切都暴露给能访问到它的人 ——
+   * 而 `/v1/*` 只要一个 API Key（默认还是 `sk-officeace` 这种谁都猜得到的），
+   * `/admin/*` 则全靠上面那个 `admin.token`。
+   */
+  // `host` / `loopback` 已在上面算好，这里复用，别再声明一遍（重复 const 是语法错）
+  if (!loopback && config.admin?.enabled !== false) {
+    const weakKey = !config.apiKeys?.length || (config.apiKeys || []).some((k) => String(k).length < 16);
+    console.log('  ────────────────────────────────────────────────');
+    console.log(`  ⚠️  监听在 ${host}，不只是本机 —— 这个端口上的一切都开放给能连上它的人。`);
+    if (!adminToken) console.log('      · 面板口令是空的：谁能连上谁就是管理员。建议在 config.json 里设 admin.token。');
+    if (weakKey) console.log('      · API Key 太短或没设：默认那个 sk-officeace 谁都能猜，建议换成长的随机串。');
+    console.log('  ────────────────────────────────────────────────');
+    console.log('');
+  }
 
   const pidFile = path.join(ROOT, 'data', 'server.pid');
   try {
