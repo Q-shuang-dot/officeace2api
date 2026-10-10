@@ -5,11 +5,12 @@
  *   - probe-second-account.mjs  看**单个号的凭据从哪来**（控制面原始响应）
  *   - 这个                       看**整体健康**（轮询公不公平、冷却有没有串、签到账对不对）
  */
+import { adminHeaders } from './adminToken.mjs';
 import { readFileSync } from 'node:fs';
 
 const BASE = 'http://127.0.0.1:7864';
 const KEY = 'sk-officeace';
-const H = { Authorization: `Bearer ${KEY}` };
+const H = adminHeaders({ Authorization: `Bearer ${KEY}` });
 
 const get = async (p) => (await fetch(BASE + p, { headers: H })).json();
 const chat = async (model) => {

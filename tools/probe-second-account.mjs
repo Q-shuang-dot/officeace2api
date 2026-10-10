@@ -6,13 +6,14 @@
  *    —— 这是唯一能让它变成"可转发"的东西，而且它不在磁盘档案里，只在这次响应里
  * ④ 有了那对 key 之后，网关 Basic 认证是不是真的不过期
  */
+import { adminHeaders } from './adminToken.mjs';
 import { readFileSync } from 'node:fs';
 
 const BASE = 'http://127.0.0.1:7864';
 const KEY = 'sk-officeace';
 
 async function api(path) {
-  const r = await fetch(BASE + path, { headers: { Authorization: `Bearer ${KEY}` } });
+  const r = await fetch(BASE + path, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) });
   return r.json();
 }
 

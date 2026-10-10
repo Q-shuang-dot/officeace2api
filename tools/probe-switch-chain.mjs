@@ -5,9 +5,12 @@
  * 所以第①步就能看到登录页；带 cookie 时只有套了登出层才会走到登录页 ——
  * 这正是这个功能的意义）。
  */
+import { adminHeaders } from './adminToken.mjs';
+
 const res = await fetch('http://127.0.0.1:7864/admin/api/login/start', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  // 面板接口要口令，见 tools/adminToken.mjs
+  headers: adminHeaders({ 'Content-Type': 'application/json' }),
   body: JSON.stringify({ label: '链验证', forceLogin: true }),
 });
 const session = await res.json();
@@ -59,7 +62,7 @@ try {
 // 收尾：把这个探测会话取消掉，别让它挂在 pending 里空转
 await fetch('http://127.0.0.1:7864/admin/api/login/cancel', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: adminHeaders({ 'Content-Type': 'application/json' }),
   body: JSON.stringify({ id: session.id }),
 });
 console.log('  探测会话已取消');

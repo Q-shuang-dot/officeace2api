@@ -497,7 +497,8 @@ export function createApp(ctx) {
       const cred = pool.pick(model);
       if (!cred) {
         return openAiError(
-          '凭据池为空：请先运行一次 OfficeAce 桌面端完成登录，或在 config.json 里手工填写 upstream.baseUrl / upstream.authorization',
+          '凭据池为空：打开控制台「号池」页点「换个账号登录」即可（不需要 OfficeAce 桌面端）；' +
+          '也可以在 config.json 里手工填写 upstream.baseUrl / upstream.authorization',
           { status: 503, type: 'no_credential', code: 'no_credential' },
         );
       }
@@ -933,8 +934,14 @@ export function createApp(ctx) {
     }
 
     let pathname = '/';
+    // 顺手把 query 也留下：面板要用 URL 上的 `?token=` 认人（见下面管理面板那段）。
+    // 以前这里只取了 `pathname`，query 直接丢掉 —— 于是 `/admin?token=xxx`
+    // 解析出来的 pathname 是 `/admin`，token 却没人看得到，必然 401。
+    let query = new URLSearchParams();
     try {
-      pathname = (new URL(req.url, `http://${req.headers.host || 'localhost'}`).pathname || '/').replace(/\/+$/, '') || '/';
+      const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      pathname = (parsed.pathname || '/').replace(/\/+$/, '') || '/';
+      query = parsed.searchParams;
     } catch {
       pathname = '/';
     }
@@ -951,15 +958,27 @@ export function createApp(ctx) {
 
     try {
       // —— 管理面板 ——
+      //
+      // 口令从**两个地方**认：`x-admin-token` 头（面板 JS 里每条 XHR 都带），
+      // 以及 URL 上的 `?token=`（人第一次打开面板时只能这么传）。
+      //
+      // 只认头是个真踩到的坑：启动横幅和下面那条 401 的提示都写着
+      // 「/admin?token=你的口令」，可服务端当时只比对请求头 ——
+      // 于是**按提示走的人反而进不去**，浏览器地址栏里带着 token 也是 401。
+      // 提示文案和实际行为不一致，比没有提示更坑。
       const isAdminRoute = pathname === '/' || pathname === '/admin' || pathname.startsWith('/admin/');
-      if (isAdminRoute && config.admin?.token && req.headers['x-admin-token'] !== config.admin.token) {
-        sendJson(res, 401, {
-          error: {
-            message: '管理员 token 无效。请在面板地址后加 ?token=你的口令',
-            type: 'authentication_error',
-          },
-        });
-        return;
+      if (isAdminRoute && config.admin?.token) {
+        const fromQuery = query.get('token') || '';
+        const fromHeader = String(req.headers['x-admin-token'] || '');
+        if (fromQuery !== config.admin.token && fromHeader !== config.admin.token) {
+          sendJson(res, 401, {
+            error: {
+              message: '管理员 token 无效。请在面板地址后加 ?token=你的口令',
+              type: 'authentication_error',
+            },
+          });
+          return;
+        }
       }
 
       if (config.admin?.enabled !== false && (pathname === '/' || pathname === '/admin' || pathname === '/admin/')) {

@@ -6,11 +6,13 @@
  *
  * 用法：node tools\probe-model-deep41.mjs
  */
+import { adminHeaders } from './adminToken.mjs';
+
 const BASE = process.env.O2A_BASE || 'http://127.0.0.1:7864';
 const KEY = process.env.O2A_KEY || 'sk-officeace';
 const MODEL = 'deepseek-v4.1-flash';
 
-const H = { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' };
+const H = adminHeaders({ Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' });
 
 let pass = 0;
 let warn = 0;

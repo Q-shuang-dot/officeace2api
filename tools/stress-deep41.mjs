@@ -25,6 +25,7 @@
  *   node tools/stress-deep41.mjs --context=12000      # 长上下文目标 token
  *   node tools/stress-deep41.mjs --all                # 全上，跑满（会花不少额度）
  */
+import { adminHeaders } from './adminToken.mjs';
 import { writeFileSync, mkdirSync } from 'node:fs';
 
 const BASE = process.env.O2A_BASE || 'http://127.0.0.1:7864';
@@ -43,7 +44,7 @@ const CONCURRENT = arg('concurrent', ALL ? 48 : 24);
 const BURST = arg('burst', ALL ? 150 : 60);
 const CONTEXT_TOKENS = arg('context', ALL ? 14000 : 9000);
 
-const H = { 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` };
+const H = adminHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` });
 
 /* ────────────────────────────── 小工具 ────────────────────────────── */
 
@@ -417,7 +418,7 @@ async function testBurst() {
 
 async function checkAccounting(before) {
   console.log('\n【5】账目核对：额度有没有被正确扣掉、号池有没有被打坏');
-  const r = await fetch(`${BASE}/admin/api/state`, { headers: { Authorization: `Bearer ${KEY}` } });
+  const r = await fetch(`${BASE}/admin/api/state`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) });
   const s = await r.json();
   const t = s.usage?.totals || {};
 
@@ -511,7 +512,7 @@ async function testCredentialSwitch() {
    * 前后各读一次，哪个号涨了就是它。上一轮涨的和这一轮涨的不一样 → 真的换号了。
    */
   const poolOk = async () => {
-    const s = await (await fetch(`${BASE}/admin/api/state`, { headers: { Authorization: `Bearer ${KEY}` } })).json();
+    const s = await (await fetch(`${BASE}/admin/api/state`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) })).json();
     return (s.pool || []).map((e) => e.ok || 0);
   };
 
@@ -599,7 +600,7 @@ async function testRecencyUnderLongContext() {
 async function testAllModels() {
   console.log('\n【8】混着打：/v1/models 列出的每个模型都打一发，看有没有漏的');
 
-  const list = await (await fetch(`${BASE}/v1/models`, { headers: { Authorization: `Bearer ${KEY}` } })).json();
+  const list = await (await fetch(`${BASE}/v1/models`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) })).json();
   const ids = (list.data || []).map((m) => m.id);
   if (!ids.length) { bad('/v1/models 一个模型都没有'); return null; }
   // 别名（`alias_of`）要在下面单独放行 —— 见对回显的说明
@@ -702,7 +703,7 @@ async function testContextCeiling() {
   messages.length = 5001;
 
   const poolCool = async () => {
-    const s = await (await fetch(`${BASE}/admin/api/state`, { headers: { Authorization: `Bearer ${KEY}` } })).json();
+    const s = await (await fetch(`${BASE}/admin/api/state`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) })).json();
     return (s.pool || []).map((e) => e.cooldownMsLeft || 0);
   };
   const coolBefore = await poolCool();
@@ -830,7 +831,7 @@ console.log(`  （改规模：--turns= --context= --concurrent= --burst= --all�
 const hz0 = await (await fetch(`${BASE}/healthz`)).json();
 console.log(`  开跑前：status=${hz0.status} 凭据=${hz0.credentials} 号=${hz0.accountsUsable}/${hz0.accounts} 额度=${hz0.creditsRemaining ?? '-'}`);
 
-const st0 = await (await fetch(`${BASE}/admin/api/state`, { headers: { Authorization: `Bearer ${KEY}` } })).json();
+const st0 = await (await fetch(`${BASE}/admin/api/state`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) })).json();
 const before = {
   requests: st0.usage?.totals?.requests || 0,
   ok: st0.usage?.totals?.ok || 0,

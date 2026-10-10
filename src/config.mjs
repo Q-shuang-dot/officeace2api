@@ -1,5 +1,41 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+
+/**
+ * 生成一个面板口令。
+ *
+ * 用 `randomBytes` 而不是 `Math.random()` —— 这个是**真的**要当密码用的，
+ * 而 `Math.random()` 是可预测的（V8 的 xorshift128+，看到几个输出就能推后续）。
+ * 24 字节 base64url ≈ 32 个字符、192 bit，爆破不现实。
+ */
+export function generateAdminToken() {
+  return randomBytes(24).toString('base64url');
+}
+
+/**
+ * 面板口令为空就补一个，并持久化。
+ *
+ * 为什么要有这一步：`admin.token` 的默认值是空字符串，而路由里那条
+ * 校验是 `if (isAdminRoute && config.admin?.token && ...)` ——
+ * 也就是说**口令为空 = 完全不校验**。本机自己用没事，可一旦把这个服务
+ * 给别人用（改成监听 0.0.0.0、或者放内网），那就是：
+ *
+ *   · 任何人打开 `http://<你的IP>:7864/admin` 就是完整管理面板；
+ *   · `/admin/api/*` 更是**一条请求都不用带凭据**就能读能改 ——
+ *     实测不带头也能拿到 70.8KB 的 `/admin/api/state`（含账号标签、
+ *     baseUrl、积分、调用记录），而且改设置、改模型别名这些写接口同样不设防。
+ *
+ * 所以第一次启动时自动生成一个、写进 config.json、并让调用方打印出来。
+ * 想关掉（纯本机自用）就把 `admin.token` 手动改回空字符串 —— 那时
+ * 校验逻辑会跳过，和以前一样。
+ */
+export function ensureAdminToken(config) {
+  if (config.admin?.token) return null;
+  const token = generateAdminToken();
+  config.admin = { ...(config.admin || { enabled: true }), token };
+  return token;
+}
 
 const DEFAULTS = {
   listen: { host: '127.0.0.1', port: 7864 },

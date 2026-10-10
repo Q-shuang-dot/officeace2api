@@ -2,7 +2,12 @@
 /**
  * 面板接口自测：把后台页面依赖的接口全打一遍
  *   node tools/test-admin.mjs [--base http://127.0.0.1:7864]
+ *
+ * 面板接口现在要口令了（服务首次启动会自动生成 `admin.token`），
+ * 所以这里统一从 `tools/adminToken.mjs` 拿 —— 它按
+ * `O2A_ADMIN_TOKEN` 环境变量 → `config.json` 的顺序找。
  */
+import { adminHeaders, resolveAdminToken, describeAdminToken } from './adminToken.mjs';
 
 const argv = process.argv.slice(2);
 const opt = (n, d) => (argv.indexOf(n) >= 0 ? argv[argv.indexOf(n) + 1] : d);
@@ -20,7 +25,7 @@ const bad = (m, e) => {
 };
 
 async function call(path, { method = 'GET', body, key } = {}) {
-  const headers = {};
+  const headers = adminHeaders();
   if (body) headers['Content-Type'] = 'application/json';
   if (key) headers.Authorization = `Bearer ${key}`;
   const res = await fetch(base + path, {
@@ -1294,7 +1299,20 @@ console.log('\n[刷新与统计]');
       const oldApi = new Function('fetch', 'H', 'J', `"use strict";\n${oldSrc}\nreturn api;`)(realFetch, H, J);
       const oldMsg = await tryRemove(oldApi, 'no-such-account:0');
       if (oldMsg.includes('缺少 id')) ok('面板：旧写法确实会丢 body（对照，证明上面那条测得住）');
-      else bad('面板：旧写法确实会丢 body（对照，证明上面那条测得住）', oldMsg || '旧写法居然也正常？');
+      else if (/token|口令|401/.test(oldMsg)) {
+        // 这条对照测试想验的是"旧写法会丢 body"，可它得先过鉴权那关才能打到接口。
+        // 面板现在要口令了，所以旧写法现在会先被 401 拦下 —— 那就换个方式证明：
+        // 直接看旧写法拼出来的请求对象里到底有没有 body。
+        const seen = {};
+        const spy = async (p, o) => { Object.assign(seen, o || {}); return { ok: true, status: 200, text: async () => '{"ok":true}' }; };
+        const spyApi = new Function('fetch', 'H', 'J', `"use strict";\n${oldSrc}\nreturn api;`)(spy, H, J);
+        await spyApi('/x', { method: 'POST', json: { id: 'a' } }).catch(() => {});
+        if (seen.body === undefined) {
+          ok('面板：旧写法确实不生成 body（对照，证明上面那条测得住）', `实测发出的键: ${Object.keys(seen).join(',') || '（空）'}`);
+        } else {
+          bad('面板：旧写法居然生成了 body，对照失效', JSON.stringify(seen));
+        }
+      } else bad('面板：旧写法确实会丢 body（对照，证明上面那条测得住）', oldMsg || '旧写法居然也正常？');
     }
   }
 }
@@ -1912,6 +1930,98 @@ console.log('\n[上游分类：请求体太大 ≠ 限流]');
   const bare = classifyUpstream(429, '{"error":{"message":"Too Many Requests"}}');
   if (bare.rateLimited && !bare.requestTooLarge) ok('裸 429 仍然算限流');
   else bad('裸 429 被误判', JSON.stringify({ r: bare.rateLimited, t: bare.requestTooLarge }));
+}
+
+/* ── 面板鉴权：空口令 = 完全不校验，这是真问题 ─────────────────────── */
+//
+// 路由里那条校验是：
+//   if (isAdminRoute && config.admin?.token && req.headers['x-admin-token'] !== token)
+// 注意中间那个 `config.admin?.token` —— **口令为空时整个条件短路，一条都不校验**。
+// 本机自用没感觉，可是这个服务一旦给别人用（监听 0.0.0.0 / 放内网）：
+//   · 任何人打开 http://<IP>:7864/admin 就是完整管理面板；
+//   · `/admin/api/*` 一条请求不用带凭据就能**读也能改**。
+//     实测不带头也能拿到约 70KB 的 `/admin/api/state`，里面有账号标签、
+//     baseUrl、积分余额、调用记录；改配置 / 改模型别名这些写接口同样不设防。
+//
+// 所以 `config.mjs` 加了 `ensureAdminToken()`：首次启动自动生成一个并写回
+// config.json，启动横幅把 `?token=` 拼好的面板地址直接打出来。
+console.log('\n[面板鉴权]');
+{
+  const { generateAdminToken, ensureAdminToken } = await import('../src/config.mjs');
+
+  const t1 = generateAdminToken();
+  const t2 = generateAdminToken();
+  if (t1 && t2 && t1 !== t2) ok('口令是随机生成的（两次不一样）');
+  else bad('口令没随机起来', `${t1} / ${t2}`);
+  if (t1.length >= 30) ok(`口令够长（${t1.length} 位，24 字节 base64url）`);
+  else bad('口令太短', `${t1.length} 位`);
+  if (/^[A-Za-z0-9_-]+$/.test(t1)) ok('口令是 URL 安全的（能直接拼在 ?token= 后面）');
+  else bad('口令含需要转义的字符，拼 URL 会出问题', t1);
+
+  // 有口令就不动它（不能每次启动都换，否则面板地址一直变）
+  const keep = { admin: { enabled: true, token: 'already-set' } };
+  if (ensureAdminToken(keep) === null && keep.admin.token === 'already-set') ok('已经有口令时不动它');
+  else bad('已有口令被覆盖了', JSON.stringify(keep));
+
+  // 空口令 → 补一个，并且写进 config 对象
+  const empty = { admin: { enabled: true, token: '' } };
+  const made = ensureAdminToken(empty);
+  if (made && empty.admin.token === made) ok('空口令会被补上并写回 config');
+  else bad('空口令没补上', JSON.stringify(empty));
+
+  // 连 admin 键都没有也要能补（老配置文件没这个键）
+  const none = {};
+  const made2 = ensureAdminToken(none);
+  if (made2 && none.admin?.token === made2 && none.admin?.enabled === true) ok('老配置（没有 admin 键）也能补上');
+  else bad('没有 admin 键时补不上', JSON.stringify(none));
+
+  // 对齐服务端：真打一发不带口令的，看有没有被拦
+  const token = resolveAdminToken();
+  if (token) {
+    const bare = await fetch(base + '/admin/api/state');
+    if (bare.status === 401) ok('服务已启用口令：不带 x-admin-token 读 /admin/api/state 会被拦（401）');
+    else bad('服务启用了口令却还放行', `HTTP ${bare.status}`);
+    const good = await call('/admin/api/state');
+    if (good.status === 200) ok('带上正确口令就能读');
+    else bad('带上正确口令还是读不了', `HTTP ${good.status}`);
+    const wrong = await fetch(base + '/admin/api/state', { headers: { 'x-admin-token': 'wrong-token' } });
+    if (wrong.status === 401) ok('口令错了也拦得住（401）');
+    else bad('错口令没拦住', `HTTP ${wrong.status}`);
+
+    /*
+     * ⚠️ 这条是**文案和实现要对得上**的测试。
+     *
+     * `?token=` 这条路差点是个死循环：启动横幅打的是
+     * `${base}/admin?token=...`，401 的提示也写着「请在面板地址后加 ?token=你的口令」，
+     * 可服务端当时**只比对 `x-admin-token` 请求头** —— 浏览器地址栏里带 token 也没人读，
+     * 于是**按提示走的人反而进不去**。提示和实际行为不一致，比没有提示更坑。
+     *
+     * 人第一次打开面板只能靠 URL 传（地址栏加不了自定义头），所以这条路必须通。
+     * 下面三条就是钉住它：带对的能进、带错的拦住、光有头没有 query 也能进。
+     */
+    const viaQuery = await fetch(`${base}/admin?token=${encodeURIComponent(token)}`);
+    if (viaQuery.status === 200) ok('面板 HTML 认 URL 上的 ?token=（浏览器唯一能用的方式）');
+    else bad('URL 上带对口令却打不开面板', `HTTP ${viaQuery.status} —— 启动横幅给的地址是错的`);
+    const viaBadQuery = await fetch(`${base}/admin?token=definitely-wrong`);
+    if (viaBadQuery.status === 401) ok('URL 上写错口令照样拦（401）');
+    else bad('URL 上写错口令竟然放行了', `HTTP ${viaBadQuery.status}`);
+
+    // 401 的提示文案里提到的用法，必须真的能用
+    const msg = await (await fetch(base + '/admin')).json().catch(() => ({}));
+    if (/token/.test(msg?.error?.message || '')) {
+      const m = String(msg.error.message).match(/\?token=(\S*)/);
+      if (m) {
+        const r2 = await fetch(`${base}/admin?token=${encodeURIComponent(token)}`);
+        if (r2.status === 200) ok('401 文案里说的用法是能用的（不是空头承诺）');
+        else bad('401 文案说的用法实际用不了', `HTTP ${r2.status}`);
+      } else {
+        note('401 文案里没写具体的 ?token= 用法，跳过这条一致性检查');
+      }
+    }
+  } else {
+    console.log('  · 当前服务没设面板口令（admin.token 为空），跳过实打实的拦截验证');
+    console.log('    这是「只在本机自用」的配置 —— 给别人用之前务必设一个。');
+  }
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

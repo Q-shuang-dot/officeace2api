@@ -6,12 +6,14 @@
  *
  * 做法：同一个请求**同时**打上游网关和本服务，逐帧对比，看差异到底出在谁身上。
  */
+import { adminHeaders } from './adminToken.mjs';
+
 const BASE = process.env.O2A_BASE || 'http://127.0.0.1:7864';
 const KEY = process.env.O2A_KEY || 'sk-officeace';
 const MODEL = 'deepseek-v4.1-flash';
 
 /* ---- 从本服务拿一条上游凭据，好做直连对照 ---- */
-const st = await (await fetch(`${BASE}/admin/api/state`, { headers: { Authorization: `Bearer ${KEY}` } })).json();
+const st = await (await fetch(`${BASE}/admin/api/state`, { headers: adminHeaders({ Authorization: `Bearer ${KEY}` }) })).json();
 const cred = st.pool?.[0];
 if (!cred) {
   console.log('  拿不到上游凭据，无法做直连对照');
@@ -47,7 +49,7 @@ console.log('══ ① 非流式 content 是不是空的 ══');
 {
   // 走本服务
   const r2 = await fetch(`${BASE}/v1/chat/completions`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` }, body: JSON.stringify(body(false)),
+    method: 'POST', headers: adminHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` }), body: JSON.stringify(body(false)),
   });
   const j = await r2.json();
   console.log(`\n  [走本服务] HTTP ${r2.status}`);
@@ -97,7 +99,7 @@ async function collect(url, headers, payload, tag) {
 }
 
 const upFrames = await collect(`${UP}/chat/completions`, { 'Content-Type': 'application/json', Authorization: AUTH }, toolBody, '上游直连');
-const myFrames = await collect(`${BASE}/v1/chat/completions`, { 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` }, toolBody, '本服务');
+const myFrames = await collect(`${BASE}/v1/chat/completions`, adminHeaders({ 'Content-Type': 'application/json', Authorization: `Bearer ${KEY}` }), toolBody, '本服务');
 
 function reportToolFrames(frames, tag) {
   console.log(`\n  [${tag}] 共 ${frames.length} 帧，带 tool_calls 的：`);
