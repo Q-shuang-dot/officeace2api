@@ -49,4 +49,11 @@ for (const [p0, tok, ak, expect, why] of rows) {
   console.log(`  ${mark} ${p.padEnd(18)} ${(tag + tag2).padEnd(14)} → ${st}  (期望 ${expect})  ${why}`);
 }
 console.log(`\n  ${bad === 0 ? '✓ 全部符合预期' : `✗ ${bad} 项不符`}\n`);
-process.exit(bad ? 1 : 0);
+/*
+ * 不要用 `process.exit()` 收尾 —— 上面打过 fetch，undici 的 keep-alive socket
+ * 此刻可能还在收尾，强退会撞上 libuv 断言
+ *   `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`
+ * （Windows 上退出码变成 -1073740791 = 0xC0000409，CRT abort）。
+ * 结果是「全部符合预期」却报了个崩溃码，而且时好时坏。
+ */
+process.exitCode = bad ? 1 : 0;
