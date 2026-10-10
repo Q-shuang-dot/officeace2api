@@ -804,19 +804,30 @@ async function api(path, opts) {
   if (typeof path === "string" && path && !/^(https?:)?\/\//.test(path)) {
     path = "/" + path.replace(/^\/+/, "");
   }
-  // opts.json 是「把这个对象当请求体发出去」的意思，得翻译成 fetch 认识的 body。
+  // opts.json 的两种用法都要支持，这里以前只处理了第一种，第二种会被**静默吃掉**：
   //
-  // 这里以前是把 opts 原样丢给 fetch 的，而 fetch 根本不认识 json 这个键，
-  // 于是所有 POST 都在发空 body —— 表现是改名 / 停用 / 删除 / 测活 / 保存配置
-  // 一律失败，服务端回「缺少 id」。自测一直没发现，因为测试是直接打接口、
-  // 不经过这个助手。改这里务必留着下面那条自测（面板块里有）。
+  //   ① `{ json: {对象} }`      → 把对象序列化成 body（本来的设计）
+  //   ② `{ json: true, body }`  → `json` 只当"我带了 body"的标志位，body 已经是字符串
+  //
+  // 出事的是第二种：老代码写的是 `const hasJson = o.json !== undefined;`
+  // 只要传了 `json`（哪怕是字面量 true）就执行 `o.body = JSON.stringify(o.json)`
+  // —— `JSON.stringify(true)` 得到字符串 `"true"`，把调用方**真正的 body 覆盖掉**。
+  //
+  // 后果特别隐蔽：服务端读不到字段时会**保留原值**（不报错、200），
+  // 所以界面显示"保存成功"，实际什么都没存进去。项目里有 8 处是第二种写法：
+  //   /admin/api/config（保存 API Key / 保存配置）×3
+  //   /admin/api/models（保存模型别名与隐藏）×1
+  //   /admin/api/refresh ×2、/admin/api/usage/reset、/admin/api/logs/clear、
+  //   /admin/api/credits/refresh
+  // 其中几个接口不读 body 字段，所以一直"看着能用"，掩盖了问题。
   const o = Object.assign({}, opts || {});
-  const hasJson = o.json !== undefined;
-  if (hasJson) {
+  let hasBody = o.body !== undefined;
+  if (o.json !== undefined && o.json !== true) {
     o.body = JSON.stringify(o.json);
-    delete o.json;
+    hasBody = true;
   }
-  o.headers = Object.assign({}, H(), hasJson ? J : {}, o.headers || {});
+  delete o.json;
+  o.headers = Object.assign({}, H(), hasBody ? J : {}, o.headers || {});
   const res = await fetch(path, o);
   const text = await res.text();
   let data = null;
@@ -942,7 +953,7 @@ function renderAccess() {
 
 async function saveKeys(keys) {
   try {
-    await api("admin/api/config", { method: "POST", json: true, body: JSON.stringify({ apiKeys: keys }) });
+    await api("admin/api/config", { method: "POST", json: { apiKeys: keys } });
     toast("API Key 已更新", "ok");
     cfgDirty = false;
     await poll();
@@ -1359,7 +1370,7 @@ async function saveModels(patch) {
     extra: Object.assign([], S.config.models.extra),
   };
   try {
-    await api("admin/api/models", { method: "POST", json: true, body: JSON.stringify(body) });
+    await api("admin/api/models", { method: "POST", json: body });
     toast("模型配置已保存", "ok");
     cfgDirty = false;
     await poll();
@@ -1533,7 +1544,7 @@ async function saveSettings() {
     log: { level: $("#cfgLogLevel").value },
   };
   try {
-    const r = await api("admin/api/config", { method: "POST", json: true, body: JSON.stringify(payload) });
+    const r = await api("admin/api/config", { method: "POST", json: payload });
     cfgDirty = false;
     toast("已保存到 config.json" + (r.restartRequired && r.restartRequired.length ? "（" + r.restartRequired.join("、") + " 需要重启生效）" : ""), "ok");
     await poll();
@@ -2640,7 +2651,7 @@ $$('#nav a[href^="#"]').forEach((a) => a.addEventListener("click", (e) => { e.pr
 $("#btnRediscover").onclick = async () => {
   $("#opTip").textContent = "正在重新发现…";
   try {
-    const r = await api("admin/api/refresh", { method: "POST", json: true, body: "{}" });
+    const r = await api("admin/api/refresh", { method: "POST", json: {} });
     $("#opTip").textContent = "新增凭据 " + r.discovered + " 条，模型 " + r.models + " 个";
     toast("已重新发现凭据", "ok"); await poll();
   } catch (e) { $("#opTip").textContent = "失败: " + e.message; toast("失败: " + e.message, "err"); }
@@ -2648,18 +2659,18 @@ $("#btnRediscover").onclick = async () => {
 $("#btnUpstream").onclick = async () => {
   $("#opTip").textContent = "正在刷新上游模型…";
   try {
-    const r = await api("admin/api/refresh", { method: "POST", json: true, body: "{}" });
+    const r = await api("admin/api/refresh", { method: "POST", json: {} });
     $("#opTip").textContent = "上游模型 " + r.models + " 个（upstream=" + r.upstream + "）";
     toast("上游模型已刷新", "ok"); await poll();
   } catch (e) { $("#opTip").textContent = "失败: " + e.message; }
 };
 $("#btnUsageReset").onclick = async () => {
   if (!confirm("确定清空统计与调用记录？")) return;
-  await api("admin/api/usage/reset", { method: "POST", json: true, body: "{}" });
+  await api("admin/api/usage/reset", { method: "POST", json: {} });
   toast("统计已重置", "ok"); await poll();
 };
 $("#btnLogsClear").onclick = async () => {
-  await api("admin/api/logs/clear", { method: "POST", json: true, body: "{}" });
+  await api("admin/api/logs/clear", { method: "POST", json: {} });
   toast("日志已清空", "ok"); await poll();
 };
 $("#usReset").onclick = $("#btnUsageReset").onclick;
@@ -2691,7 +2702,7 @@ $("#mdlRatesRefresh").onclick = async () => {
   btn.disabled = true;
   btn.textContent = "刷新中…";
   try {
-    await api("admin/api/credits/refresh", { method: "POST", json: true, body: "{}" });
+    await api("admin/api/credits/refresh", { method: "POST", json: {} });
     ratesTriedAt = 0;
     S.ratesFallback = null;
     const r = await api("admin/api/model-rates");

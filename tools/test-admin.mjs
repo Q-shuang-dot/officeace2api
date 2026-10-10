@@ -2022,6 +2022,137 @@ console.log('\n[面板鉴权]');
     console.log('  · 当前服务没设面板口令（admin.token 为空），跳过实打实的拦截验证');
     console.log('    这是「只在本机自用」的配置 —— 给别人用之前务必设一个。');
   }
+
+  /*
+   * ── 面板前端的 api() 助手：body 翻译 ────────────────────────────────
+   *
+   * 这一块是**唯一直接测面板前端代码**的地方。其它测试都直打接口，
+   * 所以面板 JS 里的 bug 一直测不出来 —— 这个 bug 就是这么漏掉的：
+   *
+   *   api() 里原本写 `const hasJson = o.json !== undefined;`
+   *   只要传了 `json`（哪怕字面量 `true`）就执行
+   *   `o.body = JSON.stringify(o.json)` —— `JSON.stringify(true)` 得到 `"true"`，
+   *   把调用方真正的 body **覆盖**掉。
+   *
+   * 而服务端读不到字段时会**保留原值**（不报错、回 200），所以界面显示
+   * "保存成功"、实际什么都没存。项目里曾有 8 处是 `{ json: true, body: ... }`
+   * 这种写法，其中几个接口不读 body 字段，于是"看着能用"把问题盖住了。
+   *
+   * 下面这几条就是把两种写法都钉住，并且**故意复现一次旧逻辑**做对照 ——
+   * 没有对照的话，"通过"可能只是因为测试压根没测到。
+   */
+  {
+    console.log('\n-- 面板前端 api() 的 body 翻译 --');
+    const { readFileSync: rf } = await import('node:fs');
+    const path = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+    const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const htmlText = rf(path.join(ROOT, 'src', 'admin.html'), 'utf8');
+
+    // 把 api() 整段抠出来（按大括号配平，截到函数结束）
+    const extractApi = (s) => {
+      for (const head of [/async function api\s*\(/, /function api\s*\(/]) {
+        const m = head.exec(s);
+        if (!m) continue;
+        const open = s.indexOf('{', m.index + m[0].length - 1);
+        let depth = 0;
+        for (let i = open; i < s.length; i += 1) {
+          if (s[i] === '{') depth += 1;
+          else if (s[i] === '}') {
+            depth -= 1;
+            if (depth === 0) return s.slice(m.index, i + 1);
+          }
+        }
+      }
+      return null;
+    };
+    const apiSrc = extractApi(htmlText);
+    if (!apiSrc) {
+      bad('没能从 admin.html 里抠出 api()', '面板结构变了？这块测不到就等于没测');
+    } else {
+      const panelH = () => ({ 'x-admin-token': resolveAdminToken() });
+      const panelJ = { 'Content-Type': 'application/json' };
+      // api() 发相对路径；浏览器会补 origin，Node 不会，包一层补上
+      const fetchPanel = (i, init) => (typeof i === 'string' && i.startsWith('/') ? fetch(base + i, init) : fetch(i, init));
+      const mk = (src) => new Function('fetch', 'H', 'J', `${src}\nreturn api;`)(fetchPanel, panelH, panelJ);
+
+      const apiPanel = mk(apiSrc);
+
+      // 拿一个可逆的写入点做实验：模型别名
+      const st = await (await fetch(base + '/admin/api/state', { headers: panelH() })).json();
+      const modelIds = (st.models || []).map((m) => m.id);
+      const aliasTarget = modelIds.find((x) => /glm-5\.2/.test(x)) || modelIds[0];
+      const aliasBase = {
+        alias: { ...(st.config?.models?.alias || {}) },
+        hidden: st.config?.models?.hidden || [],
+        extra: st.config?.models?.extra || [],
+      };
+      const MARK = 'zz-test-admin-api';
+
+      if (!aliasTarget) {
+        note('拿不到任何模型 id，跳过 api() 的写入验证');
+      } else {
+        // ① { json: {对象} } —— 本来的设计用法
+        await apiPanel('/admin/api/models', {
+          method: 'POST',
+          json: { ...aliasBase, alias: { ...aliasBase.alias, [MARK]: aliasTarget } },
+        });
+        const afterObj = (await (await fetch(base + '/admin/api/state', { headers: panelH() })).json())
+          .config?.models?.alias?.[MARK];
+        if (afterObj === aliasTarget) ok('api() 支持 { json: {对象} }（对象被正确序列化成 body）');
+        else bad('{ json: {对象} } 没写进去', `读到 ${JSON.stringify(afterObj)}`);
+
+        // ② { json: true, body: <字符串> } —— 旧写法，也必须能通
+        await apiPanel('/admin/api/models', {
+          method: 'POST',
+          json: true,
+          body: JSON.stringify({ ...aliasBase, alias: { ...aliasBase.alias, [MARK]: 'zz-second-form' } }),
+        });
+        const afterTrue = (await (await fetch(base + '/admin/api/state', { headers: panelH() })).json())
+          .config?.models?.alias?.[MARK];
+        if (afterTrue === 'zz-second-form') ok('api() 支持 { json: true, body }（真 body 不被 "true" 覆盖）');
+        else bad('{ json: true, body } 的真 body 被吃掉了', `读到 ${JSON.stringify(afterTrue)} —— 界面会显示成功但没保存`);
+
+        // ③ 对照：把新逻辑换回旧的，必须**复现**这个 bug
+        const oldSrc = apiSrc.replace(
+          /let hasBody = o\.body !== undefined;\s*\n\s*if \(o\.json !== undefined && o\.json !== true\) \{\s*\n\s*o\.body = JSON\.stringify\(o\.json\);\s*\n\s*hasBody = true;\s*\n\s*\}\s*\n\s*delete o\.json;\s*\n\s*o\.headers = Object\.assign\(\{\}, H\(\), hasBody \? J : \{\}, o\.headers \|\| \{\}\);/,
+          'const hasJson = o.json !== undefined;\n  if (hasJson) { o.body = JSON.stringify(o.json); delete o.json; }\n  o.headers = Object.assign({}, H(), hasJson ? J : {}, o.headers || {});',
+        );
+        if (oldSrc === apiSrc) {
+          note('对照版没替换成功（api() 里那几行又改了？）—— 请确认这块测试还有效');
+        } else {
+          // 先清场，制造"本来没这个别名"的干净状态
+          await apiPanel('/admin/api/models', { method: 'POST', json: { ...aliasBase } });
+          const apiOld = mk(oldSrc);
+          await apiOld('/admin/api/models', {
+            method: 'POST',
+            json: true,
+            body: JSON.stringify({ ...aliasBase, alias: { ...aliasBase.alias, [MARK]: 'zz-should-not-appear' } }),
+          }).catch(() => { /* 老版可能抛错，无所谓，看的是有没有写进去 */ });
+          const afterOld = (await (await fetch(base + '/admin/api/state', { headers: panelH() })).json())
+            .config?.models?.alias?.[MARK];
+          if (afterOld === undefined) ok('对照成立：旧逻辑确实会静默丢掉 body（证明上面两条真的测到了）');
+          else bad('对照没复现（旧逻辑居然写进去了）', `alias[${MARK}] = ${JSON.stringify(afterOld)}，说明这个测试可能测不到东西`);
+        }
+
+        // 还原：把别名配置恢复原样
+        await apiPanel('/admin/api/models', { method: 'POST', json: { ...aliasBase } });
+        const restored = (await (await fetch(base + '/admin/api/state', { headers: panelH() })).json())
+          .config?.models?.alias || {};
+        if (restored[MARK] === undefined
+          && JSON.stringify(Object.keys(restored).sort()) === JSON.stringify(Object.keys(aliasBase.alias).sort())) {
+          ok('模型别名配置已还原成测试前的样子', `alias 共 ${Object.keys(restored).length} 项`);
+        } else {
+          bad('模型别名配置没还原干净', JSON.stringify(restored));
+        }
+      }
+
+      // ④ 顺带钉住：8 处调用点不该再有 `json: true`
+      const leftover = [...htmlText.matchAll(/json:\s*true,\s*body:/g)];
+      if (leftover.length === 0) ok('面板里没有 `{ json: true, body: ... }` 的旧写法了');
+      else note(`面板里还有 ${leftover.length} 处 \`{ json: true, body: ... }\`（现在也支持，但建议统一成 \`json: {对象}\`）`);
+    }
+  }
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
