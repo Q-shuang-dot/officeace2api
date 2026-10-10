@@ -18,15 +18,21 @@
 
 ---
 
-## 下载桌面端
+## 获取桌面端
 
-**官方下载地址：** [https://officeace.cn/download](https://officeace.cn/download)
+**OfficeAce 桌面端**（华为云 DevEco Studio 助手）获取方式：
+
+1. **搜索引擎**：搜索「OfficeAce」、「OfficeAce 下载」、「华为云 DevEco」
+2. **应用市场**：华为应用市场、微软应用商店
+3. **开发工具集成**：部分华为云开发工具（如 DevEco Studio）会集成此助手
 
 **支持平台：**
 - Windows 安装版（推荐）
 - Windows 便携版
 - macOS
 - Linux
+
+> 注：官方下载页面 officeace.cn/download 目前无法访问，建议通过上述渠道获取。
 
 ---
 
@@ -64,7 +70,7 @@
 ## 正确的使用流程
 
 ### 1. 安装桌面端
-从 [https://officeace.cn/download](https://officeace.cn/download) 下载并安装
+搜索「OfficeAce」下载并安装，或从华为应用市场获取
 
 ### 2. 在桌面端登录账号
 打开 OfficeAce → 登录你的账号 → 发一条对话（确保凭据生效）

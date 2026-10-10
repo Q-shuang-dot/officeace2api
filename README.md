@@ -4,8 +4,9 @@
 
 **零依赖** —— 只用 Node.js 内置模块，不用 `npm install`。
 
-> ⚠️ **前置依赖**：需要安装 [OfficeAce 桌面端](https://officeace.cn/download) 并登录账号。  
-> 本项目是桌面端的伴生服务，会自动读取桌面端的凭据文件。如果不安装桌面端，账号授权会失败。
+> ⚠️ **前置依赖**：需要安装 **OfficeAce 桌面端**（华为云 DevEco Studio 助手）并登录账号。  
+> 获取方式：搜索「OfficeAce」或「华为云 DevEco」下载客户端，或从华为应用市场/官方渠道获取。  
+> 本项目是桌面端的伴生服务，会自动读取桌面端的凭据文件。**如果不安装桌面端，账号授权会失败。**
 
 ![控制台](docs/panel-accounts.png)
 
@@ -107,7 +108,7 @@ cd officeace2api
 
 **① 借用已经登录过的 OfficeAce 桌面端（推荐）**
 
-> ⚠️ **必须先安装 OfficeAce 桌面端**：[https://officeace.cn/download](https://officeace.cn/download)  
+> ⚠️ **必须先安装 OfficeAce 桌面端**（搜索「OfficeAce」或从华为应用市场获取）  
 > 如果不安装桌面端，「换个账号登录」会提示「授权失败」。
 
 登录它、随便发一条对话，然后双击 `stop.cmd` 再 `start.cmd` —— 它会自动把凭据抠出来。

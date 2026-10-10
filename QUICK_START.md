@@ -4,7 +4,7 @@
 
 **必须先安装 OfficeAce 桌面端才能使用！**
 
-- 下载地址：[https://officeace.cn/download](https://officeace.cn/download)
+- 获取方式：搜索「OfficeAce」或从华为应用市场下载
 - 原因：本项目是桌面端的伴生服务，需要读取桌面端的账号凭据
 - 如果不安装：控制面板的「换个账号登录」会提示「授权失败」
 
