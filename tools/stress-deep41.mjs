@@ -630,23 +630,37 @@ async function testAllModels() {
   else bad(`有 ${failed.length} 个模型打不通`, failed.map((f) => `${f.id}→${f.status}${f.code ? `(${f.code})` : ''}`).join(', '));
 
   /*
-   * 回显名字对不上 ≠ 路由串台，得先分清楚是**谁**改的。
+   * 回显名字对不上 ≠ 路由串台，得先分清楚是**谁**改的、该不该改。
    *
    * `models.mjs` 的 `resolve()` 只在命中 `models.alias` 时替换名字，否则原样返回，
-   * 所以反代不篡改 `model`。实测对不上的那两个都是**上游自己的归一化**：
-   *   Kimi-K2.6                 → kimi-k2.6                （同一模型，两种拼写）
-   *   deepseek-v4.1-flash-0930  → deepseek-v4.1-flash     （上游把带日期后缀的归到基座）
-   * 这跟别处踩过的「上游回 81009 说名字不认」正好是同一件事的两面：
+   * 所以反代不篡改 `model`。对不上的一共三类，**全是正常的**：
+   *
+   *   ① **别名**：`/v1/models` 里带 `alias_of` 的那些。问 `gpt-4o` 回 `glm-5.2`
+   *      是**设计如此** —— 别名存在的意义就是"借另一个模型的名字"。
+   *      （别名后来又在面板里被加回来了，所以这一节要跟着它变。）
+   *   ② **上游归一大小写**：Kimi-K2.6 → kimi-k2.6
+   *   ③ **上游归一到基座**：deepseek-v4.1-flash-0930 → deepseek-v4.1-flash
+   *
+   * ②③ 跟别处踩过的「上游回 81009 说名字不认」是同一件事的两面：
    * **名字的最终解释权在上游**，它爱怎么归一就怎么归一。
    *
-   * 所以断言只盯**真的串台**：回显既不是请求的那个、也不是它的"近亲"
-   * （忽略大小写 / 去掉日期后缀之后相同）才算故障。
+   * 所以断言只盯**真的串台**：回显既不是请求的那个、也不是别名指向的那个、
+   * 也不是它的"近亲"（忽略大小写 / 去掉日期后缀之后相同），才算故障。
    */
   const family = (s) => String(s || '').toLowerCase().replace(/[-_.]/g, '').replace(/\d{4,}$/, '');
-  const wrongEcho = rs.filter((r) => r.status === 200 && r.model && r.model !== r.id && family(r.model) !== family(r.id));
-  const normalized = rs.filter((r) => r.status === 200 && r.model && r.model !== r.id && family(r.model) === family(r.id));
-  if (wrongEcho.length === 0) ok('没有路由串台（回显最多是上游把名字归一了）');
-  else bad(`有 ${wrongEcho.length} 个模型回显的名字对不上，像是串台了`, wrongEcho.map((w) => `${w.id}→${w.model}`).join(', '));
+  const expectedEcho = (id) => [id, aliasOf[id]].filter(Boolean);
+  const isSameFamily = (a, b) => family(a) === family(b);
+  const acceptable = (r) => expectedEcho(r.id).some((e) => r.model === e || isSameFamily(r.model, e));
+
+  const wrongEcho = rs.filter((r) => r.status === 200 && r.model && r.model !== r.id && !acceptable(r));
+  const aliasEcho = rs.filter((r) => r.status === 200 && aliasOf[r.id] && r.model === aliasOf[r.id]);
+  const normalized = rs.filter((r) => r.status === 200 && r.model && r.model !== r.id && !aliasOf[r.id] && isSameFamily(r.model, r.id));
+
+  if (wrongEcho.length === 0) ok('没有路由串台（回显对不上都能解释：别名 / 上游归一）');
+  else bad(`有 ${wrongEcho.length} 个模型回显的名字对不上，像是串台了`, wrongEcho.map((w) => `${w.id}→${w.model}（期望 ${expectedEcho(w.id).join(' 或 ')}）`).join(', '));
+  if (aliasEcho.length) {
+    ok(`别名正常转发（${aliasEcho.length} 个别名都回显了它的目标模型）`, aliasEcho.map((w) => `${w.id}→${w.model}`).join('  '));
+  }
   if (normalized.length) {
     note(`上游把 ${normalized.length} 个名字归一了（反代原样发出，是上游改的）：${normalized.map((w) => `${w.id}→${w.model}`).join('  ')}`);
   }
