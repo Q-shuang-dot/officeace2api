@@ -26,10 +26,20 @@ export function quirksFor(model) {
 const STRIP_WHEN_UNSUPPORTED = ['thinking', 'enable_thinking', 'reasoning_effort', 'stream_options'];
 
 /**
+ * 小于这个值的 `max_tokens` 一律原样透传给上游，不追加推理预算。
+ *
+ * 依据：上游不按 `max_tokens` 截断正文，只要推理跑完就把整句说完。所以对
+ * `max_tokens: 1` 这种精确请求，追加 1024 的"推理预算"会把正文一起放开 ——
+ * 实测客户端要 1 个 token，拿回来 24 个字符。这种请求的意图太明确，
+ * 不该替它改。给到 16 以上的都是"我要一段正常回答"，那时追加才是有帮助的。
+ */
+export const TINY_MAX_TOKENS = 16;
+
+/**
  * 构造发送给上游的请求体
  */
 export function buildUpstreamBody(body, model, options = {}) {
-  const { alwaysStream = true, includeUsage = true, stripThinking = false, minMaxTokens = null } = options;
+  const { alwaysStream = true, includeUsage = true, stripThinking = false, minMaxTokens = null, exactMaxTokens = null } = options;
   const out = { ...body };
   out.model = model;
   delete out.user_report;
@@ -41,30 +51,62 @@ export function buildUpstreamBody(body, model, options = {}) {
   /**
    * 推理模型的 token 预算保险丝。
    *
-   * `deepseek-v4.1-flash` 这类模型会**先**花掉几十到几百 token 推理，
-   * 再吐正文。客户端按老习惯给 `max_tokens: 64` 的话，预算全烧在推理上，
-   * 返回的是 `content: ""` + `finish_reason: "length"` —— 客户端拿到 200 和空正文，
-   * 除了以为反代坏了没法有别的想法。
+   * 上游（华为 MaaS 网关实测）把 `max_tokens` 当成**推理 + 正文的总预算**，
+   * 所以这类"先想再答"的模型在预算不够时会把 token 全花在推理上：
    *
-   * 实测（tools/probe-model-deep41.mjs）：`max_tokens` ≤300 时正文基本是空的，
-   * 800 才稳定有正文，而一次推理本身就要 180~350 token。
+   *   max_tokens=64  → content:""          finish_reason:"length"
+   *   max_tokens=1024 → content:"…"        finish_reason:"stop"
    *
-   * 这里做**下限抬升**：客户端给的比 `minMaxTokens` 还小就抬到下限。
-   * 只抬不降 —— 客户端要更长的输出照样给。
-   * 不想被改写就设 `models.minMaxTokens: 0`。
+   * 客户端拿到 200 + 空正文，除了以为反代坏了没法有别的想法。
+   *
+   * 做法是**追加"推理预算"**，而不是给客户端设一个下限：
+   *
+   *   max_tokens = 客户端要的 + minMaxTokens（默认 1024）
+   *
+   * 为什么不是 `max(客户端要的, 下限)`：客户端给 `max_tokens: 1` 时，
+   * 设下限会把正文也放开，实测吐出 369 个 token；追加式给 1 + 1024，
+   * 正文至少不会被放开。
+   *
+   * ⚠️ 但**追加也治不了 `max_tokens: 1` 这种精确请求**：上游根本不按
+   *    `max_tokens` 截断正文，只要推理跑完它就把整句说完 —— 实测 1+1024
+   *    拿回来的还是 24 个字符。所以给得特别小的请求干脆原样透传，
+   *    让客户端拿到它自己要求的那个结果（多半是空正文 + length）。
+   *    下限 `TINY_MAX_TOKENS` 就是这个分界线。
+   *
+   * 代价是给得小的时候模型会慢（那 1024 个推理 token 要真花时间，
+   * 实测一个短问答 3~28 秒）。这是推理模型的本性，反代绕不开。
+   * 不想被追加就设 `models.minMaxTokens: 0`。
    */
   let bumped = null;
-  const min = Number(minMaxTokens) || 0;
-  if (min > 0) {
+  /**
+   * `exactMaxTokens`：**直接指定**这一发发给上游的 `max_tokens`，跳过下面那套
+   * 「加上 allowance」的推算。
+   *
+   * 给「正文为空」的重试用。那一路已经知道上一发烧了多少推理 token，要的是
+   * 一个**算出来的具体数**，而不是"在客户端给的数上再加一档" —— 而且这时候
+   * 客户端可能压根没给 `max_tokens`（那就没有"加"的基准）。
+   *
+   * ⚠️ 仍然守住 `< TINY_MAX_TOKENS` 的约定：客户端明确只要 1 个 token 时，
+   *    连重试都不该发生（server.mjs 的 `clientMaxTokensForRetry` 已经拦了），
+   *    这里再兜一道，免得哪天调用方漏了判断就把客户端的极小请求撑大。
+   */
+  const exact = Number(options.exactMaxTokens);
+  const exactGiven = Number(out.max_tokens);
+  if (Number.isFinite(exact) && exact > 0 && !(Number.isFinite(exactGiven) && exactGiven < TINY_MAX_TOKENS)) {
+    out.max_tokens = Math.round(exact);
+    bumped = { from: Number.isFinite(exactGiven) ? exactGiven : null, to: out.max_tokens, mode: 'retry' };
+  }
+
+  const allowance = Number(minMaxTokens) || 0;
+  if (!bumped && allowance > 0) {
     const given = Number(out.max_tokens);
-    if (!Number.isFinite(given)) {
-      // 客户端压根没给 → 也要给个下限，否则等于让上游按自己的默认来（对推理模型同样会空）
-      out.max_tokens = min;
-      bumped = { from: null, to: min };
-    } else if (given < min) {
-      out.max_tokens = min;
-      bumped = { from: given, to: min };
+    // 给得特别小 → 原样透传，不越权替客户端决定"其实你想要 1000 个 token"
+    if (Number.isFinite(given) && given >= TINY_MAX_TOKENS) {
+      out.max_tokens = given + allowance;
+      bumped = { from: given, to: out.max_tokens, mode: 'allowance' };
     }
+    // 客户端没给 max_tokens → 不动它。这种情况上游会用自己的默认值（实测够用），
+    // 我们凭空塞一个反而可能比上游默认还小。
   }
 
   if (alwaysStream) {

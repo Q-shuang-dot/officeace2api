@@ -15,6 +15,7 @@ import {
   postChat,
   quirksFor,
   takeBumpNote,
+  TINY_MAX_TOKENS,
 } from './upstream.mjs';
 import { trimSlash } from './util.mjs';
 
@@ -346,7 +347,7 @@ export function createApp(ctx) {
   const bumpWarned = new Set();
 
   /**
-   * 这个模型是不是"先推理再作答"的那类。
+   * 这个模型要额外追加多少「推理预算」token。
    *
    * 实测 34 个模型的结论：**能用的 9 个全是推理模型**，包括名字里毫无提示的
    * `glm-5.2`（给 max_tokens:64，completion_tokens 干到 474，多的一次 8460）。
@@ -369,12 +370,10 @@ export function createApp(ctx) {
   }
 
   /**
-   * 这个模型的 `max_tokens` 下限。
-   *
-   * 只抬不降、客户端没给就不补 —— 抬升是个改动客户端意图的动作。
+   * 这个模型的推理预算（追加多少 token）。
    *
    * ⚠️ 这条防线**不保证**正文不为空：实测同一个问题，1024 预算空 0/12，
-   *    2048 反而空 1/12 —— 推理开销是随机的，任何固定下限都会偶发踩空。
+   *    2048 反而空 1/12 —— 推理开销是随机的，任何固定预算都会偶发踩空。
    *    真正兜底的是非流式那条"空正文自动重试"。
    */
   function bumpMaxTokensFor(model) {
@@ -385,8 +384,34 @@ export function createApp(ctx) {
     for (const [k, v] of Object.entries(perModel)) {
       if (norm(k) === norm(model)) return Math.max(0, Number(v) || 0);
     }
-    const floor = cfg.minMaxTokens === undefined ? 1024 : Math.max(0, Number(cfg.minMaxTokens) || 0);
-    return floor > 0 && isReasoningModel(model) ? floor : 0;
+    const allowance = cfg.minMaxTokens === undefined ? 1024 : Math.max(0, Number(cfg.minMaxTokens) || 0);
+    return allowance > 0 && isReasoningModel(model) ? allowance : 0;
+  }
+
+  /**
+   * 「目录里有、但打不通」的完整清单。
+   *
+   * 探测结果和池子的学习记录合并去重 —— 只报探测结果的话，运行期新发现的
+   * 打不通模型要等下次探测才可见；只报学习记录的话，开机那一刻是空的
+   * （而客户端恰恰是那时候读列表）。
+   */
+  function listUnavailableModels() {
+    const set = new Set(pool.unavailableModels());
+    for (const m of ctx.modelProbe?.unavailable || []) set.add(m);
+    return [...set].sort();
+  }
+
+  /**
+   * 一次成功的请求 = 这个模型确实能用。
+   *
+   * 权限是活的（运营可能刚给这个号开了某个模型），所以探测出来的黑名单
+   * 必须能被一次真实成功撤销 —— 否则探测那一刻没权限的模型就永远列不出来了。
+   */
+  function markModelUsable(cred, model) {
+    pool.markOk(cred, model);
+    if (ctx.modelProbe?.clear(model)) {
+      log.info('这个模型这次打成功了，已从"打不通"名单里撤掉', { model });
+    }
   }
 
   async function refreshUpstreamCatalog() {
@@ -425,11 +450,41 @@ export function createApp(ctx) {
     let stripUsed = stripThinking;
     let lastError = null;
     let lastStatus = 502;
-    // 推理模型偶尔会把整个 max_tokens 烧在推理上，正文一个 token 都不剩。
-    // 这是**随机**发生的（实测同一个问题连打 12 次，1024 预算空 0 次、2048 反而空 1 次），
-    // 所以抬高下限治不了根，只能靠"发现空正文就再打一次"。整个请求只重试一次，
-    // 免得客户端卡在里面反复等。
+    /**
+     * 推理模型偶尔会把整个 max_tokens 烧在推理上，正文一个 token 都不剩。
+     *
+     * ⚠️ **这条重试以前是无效的**：它原样重发**同一个** `max_tokens`，而推理
+     *    开销是**随机**的 —— 只要这次的需求超过预算，第二次照样超。
+     *    实测（`tools/diag-empty-window.mjs`）：`max_tokens=16/64/256` 三档
+     *    各打 12 次，**每档都有 4 次空正文、共 12/36**，而且失败的是**固定的
+     *    两个问题**（第 3、5 个 prompt）—— 说明那不是"偶发"，是这些问题的
+     *    推理开销稳定地超过预算。日志里能直接看到：
+     *    `clientAsked:64, sentToUpstream:1088` → `reasoningTokens:1080` → 正文空。
+     *
+     *    所以重试必须**把预算真的抬高**，见下面的 `emptyRetryMaxTokens`。
+     */
     let emptyRetryUsed = false;
+    /**
+     * 重试那一发单独用的 `max_tokens`（null = 没触发过重试，按平时的规则算）。
+     *
+     * 算法：已知这一发用了多少推理 token，留出正文的空间，再和一个地板取大。
+     * 取大是为了兜住"第二次推理比第一次还贪"的情况 —— 就算还是被截断，
+     * 至少能拿到**部分正文**，而不是继续返回空字符串。
+     */
+    let emptyRetryMaxTokens = null;
+    /**
+     * 客户端自己给的 `max_tokens`（没给就是 null）。
+     *
+     * 用来判断"空正文是不是客户端要的东西"：给 <16 的请求本来就会被原样透传
+     * （见 upstream.mjs 的 TINY_MAX_TOKENS），上游把预算全花在推理上、正文为空
+     * 是**每一次都这样**的稳定行为，重试纯属浪费。实测漏了这个判断之后，
+     * 日志里会刷出一堆"重打一次"却什么都没变的 WARN。
+     */
+    const rawMax = Number(body.max_tokens);
+    const clientMaxTokensForRetry = Number.isFinite(rawMax) && rawMax < TINY_MAX_TOKENS ? rawMax : null;
+    // 重试时的两个数：地板（保底）和留给正文的余量（在已知推理开销之上再加）
+    const retryFloor = Math.max(0, Number(config.models?.emptyRetryFloorTokens) || 2048);
+    const retryContentRoom = Math.max(0, Number(config.models?.emptyRetryContentTokens) || 512);
 
     while (attemptsLeft > 0) {
       attemptsLeft -= 1;
@@ -449,6 +504,8 @@ export function createApp(ctx) {
         // 推理模型的下限抬升。全局一个数就够用：不给下限的话，客户端按
         // 老习惯给的 max_tokens:64 会被推理全吃掉，正文是空的（见 upstream.mjs 注释）。
         minMaxTokens: bumpMaxTokensFor(model),
+        // 重试那一发用抬高后的预算（否则就是原样重发一遍，见 emptyRetryMaxTokens 的注释）
+        exactMaxTokens: emptyRetryMaxTokens,
       });
       // 标记要当场摘掉 —— 留在 body 里会被原样发给上游
       const bumpNote = takeBumpNote(upstreamBody);
@@ -692,6 +749,30 @@ export function createApp(ctx) {
       const payload = agg.payload;
 
       /**
+       * 重试也救不回来的那种：第二次仍然把新预算全烧在推理上。
+       *
+       * 单独记一条 WARN —— 否则客户端拿到 200 + 空正文，日志里只有一条
+       * "重打一次"，看不出最后到底成没成。实测（`tools/diag-empty-window.mjs`，
+       * 48 次要撞到 1 次）失败的那一发推理字符数到 13500，就算把重试预算
+       * 再翻一倍也未必兜得住，而代价是每次正常请求都得等更久。
+       * 所以这里选择**记下来**而不是继续无脑加预算。
+       */
+      if (
+        emptyRetryUsed &&
+        !String(payload.choices?.[0]?.message?.content || '').length &&
+        !payload.choices?.[0]?.message?.tool_calls &&
+        payload.choices?.[0]?.finish_reason === 'length' &&
+        (payload.usage?.completion_tokens_details?.reasoning_tokens || 0) > 0
+      ) {
+        log.warn('重试还是被推理吃光了预算，正文依旧是空的（这一发只能这样了）', {
+          model,
+          reasoningTokens: payload.usage.completion_tokens_details.reasoning_tokens,
+          maxTokens: emptyRetryMaxTokens || Number(body.max_tokens),
+          hint: '可以调大 config.models.emptyRetryFloorTokens 试试；或者让客户端把 max_tokens 给大一点',
+        });
+      }
+
+      /**
        * 推理模型把预算全烧在推理上时，正文是空的、finish_reason 是 length。
        * 客户端拿到 200 + 空正文，除了以为反代坏了没法有别的想法 —— 而换一次
        * 通常就好了（推理长度是随机的）。
@@ -708,6 +789,11 @@ export function createApp(ctx) {
        */
       if (
         !emptyRetryUsed &&
+        // 客户端要的就是"极小输出"（<16 个 token）时不重试 —— 那多半正是它想要的结果，
+        // 而且重试也没用：不追加推理预算的话上游每次都把预算全花在推理上（实测
+        // max_tokens=1/2/5/15 输出就是 1/2/5/15 个推理 token、正文为空，非常稳定）。
+        // 之前漏了这一条，日志里刷出一堆"重打一次"却毫无效果的 WARN。
+        clientMaxTokensForRetry === null &&
         !String(payload.choices?.[0]?.message?.content || '').length &&
         !payload.choices?.[0]?.message?.tool_calls &&
         payload.choices?.[0]?.finish_reason === 'length' &&
@@ -715,13 +801,20 @@ export function createApp(ctx) {
       ) {
         emptyRetryUsed = true;
         const rt = payload.usage.completion_tokens_details.reasoning_tokens;
-        log.warn('这个模型把 token 全用在推理上了，正文为空，重打一次', {
+        // 真的抬高预算再打 —— 原样重发是无效的，原因见 emptyRetryMaxTokens 的注释
+        const sentBefore = emptyRetryMaxTokens || bumpMaxTokensFor(model) + (Number(body.max_tokens) || 0);
+        emptyRetryMaxTokens = Math.max(retryFloor, rt + retryContentRoom);
+        log.warn('这个模型把 token 全用在推理上了，正文为空，抬高预算重打一次', {
           model,
           reasoningTokens: rt,
           completionTokens: payload.usage?.completion_tokens,
+          maxTokensBefore: sentBefore,
+          maxTokensRetry: emptyRetryMaxTokens,
         });
         attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: 'EMPTY_CONTENT_RETRY', error: `推理用掉 ${rt} token，没留下正文` });
-        // 不算这条凭据的错，标记 ok
+        // 不算这条凭据的错，标记 ok。
+        // ⚠️ 这里**不能**用 markModelUsable：这次是"空正文"，它只证明
+        // 凭据没坏，不证明模型列得出来（探测黑名单不该被它撤销）。
         pool.markOk(cred, model);
         await sleep(backoffMs(Number(config.upstream.retryBackoffMs) || 1000, attemptNo));
         // 把这一次的配额还回去：重试是替客户端兜底，不该多扣它的重试次数
