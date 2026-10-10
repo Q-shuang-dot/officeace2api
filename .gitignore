@@ -1,14 +1,21 @@
 # ─────────────────────────────────────────────────────────────
 # ⚠️ data/ 里是运行期状态，绝对不能提交：
+#    data/admin-url.vars.cmd   ← **明文面板口令**（tools\admin-url.mjs --cmd 写的）
 #    data/refresh-state.json      ← 明文临时 AK/SK（华为云凭据）
-#    data/oauth-accounts.json     ← 华为云账号 ID / 用户名
+#    data/oauth-accounts.json     ← **明文长效凭据**：refreshToken(JWT) /
+#                                    authorization(Basic) / dpopPrivateJwk(含私钥)
 #    data/bonus-claims.json       ← 签到记录
 #    data/quota-history.json      ← 积分历史
 #    data/usage.json              ← 调用记录与 token 消耗
 #    data/accounts.json           ← 账号别名 / 停用 / 忽略名单
 # 程序首次启动会自动建目录并写默认值，clone 下来不需要这些文件。
+#
+# 另注：`tools/` 是会提交的，所以带秘密的生成物**不要**往那儿放
+# （第一版 admin-url.vars.cmd 就落在 tools\ 下，git check-ignore 一验才发现没被挡）。
 # ─────────────────────────────────────────────────────────────
 data/*
+# 顺带挡一层：万一以后有生成物落到 tools/ 下、名字带这几个词，也别提交
+tools/*.vars.cmd
 !data/.gitkeep
 
 # 本机配置：含 apiKeys、自定义上游地址/鉴权头，首次启动按默认值自动生成
