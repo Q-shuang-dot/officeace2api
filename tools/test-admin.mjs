@@ -980,6 +980,9 @@ console.log('\n[刷新与统计]');
   // 也就是 URL 编码的冒号被还原成 `:` 的那个全 ID
   const legacyCred = {
     baseUrl: 'https://modelgw.example/v2',
+    // 这里的用户名随便写，只要和下面 otherCred 不同即可。
+    // 注意别照抄面板上 / 日志里看到的真实值 —— 这里曾经是真实 AK 的前 8 位，
+    // 等于把那 32 bit 明文写进了公开仓库。夹具一律用假值。
     headers: { Authorization: 'Basic ' + Buffer.from('a1b2c3d4:secret').toString('base64') },
     source: 'models.json',
     userId: FULL,
