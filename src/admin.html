@@ -346,7 +346,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
       <input id="mdlFilter" style="max-width:200px" placeholder="筛选模型…" />
     </h2>
     <section>
-      <h3>可用模型<span class="sp"></span><span class="muted" id="mdlCount"></span></h3>
+      <h3>可用模型<span class="sp"></span>
+        <button class="ghost mini" id="mdlToggleUnavail" style="display:none"></button>
+        <span class="muted" id="mdlCount"></span>
+      </h3>
       <div class="note warn" id="mdlUnavail" style="display:none"></div>
       <div class="body scroll" id="mdlBody"></div>
       <div class="body" style="border-top:1px solid var(--line)">
@@ -771,6 +774,9 @@ const H = () => (TOKEN ? { "x-admin-token": TOKEN } : {});
 const J = { "Content-Type": "application/json" };
 
 let S = null;            // 最新 state
+// 「模型管理」里要不要把「打不通」的模型也列出来（默认不列）。
+// 不能塞进 S —— poll() 每轮把 S 整个换掉，放进去开关一秒就被重置。
+let mdlShowUnavail = false;
 let page = "accounts";
 let callFilter = "all";
 let logLevel = "";
@@ -1171,23 +1177,84 @@ function rateFor(id, rates) {
 
 function renderModels() {
   const q = ($("#mdlFilter").value || "").toLowerCase();
-  const list = S.models.filter((m) => !q || m.id.toLowerCase().includes(q) || String(m.developer).toLowerCase().includes(q));
   const rates = modelRates();
   const matched = S.models.map((m) => rateFor(m.id, rates)).filter(Boolean).length;
+  // 「目录里有、但一个号都用不了」的模型 —— 实测两号时 34 个里有 23 个是这种。
+  // 默认**不列进下面的表**：排在那儿只会让人照着一个个试、试一个错一个。
+  // 想核对就点右上角那个开关。
+  const unavail = (S.health && S.health.modelsUnavailable) || [];
+  const unavailSet = new Set(unavail);
+  // ⚠️ 只数**目录里真有的**那些。探测名单里可能还留着已经删掉的别名
+  // （比如曾经配过的 gpt-4o），直接拿 unavail.length 当"打不通数"会算出
+  // 「可用 9」却「显示 11 个」这种对不上的账。
+  const badCount = S.models.filter((m) => unavailSet.has(m.id)).length;
+  const filtered = S.models.filter((m) => !q || m.id.toLowerCase().includes(q) || String(m.developer).toLowerCase().includes(q));
+  const list = mdlShowUnavail ? filtered : filtered.filter((m) => !unavailSet.has(m.id));
+
   $("#mdlSub").textContent = "共 " + S.models.length + " 个" +
+    (badCount ? " · 可用 " + (S.models.length - badCount) + " · 打不通 " + badCount : "") +
     (matched ? " · " + matched + " 个有倍率" : "");
   $("#mdlCount").textContent = "显示 " + list.length + " 个";
-  // 「目录里有、但一个号都用不了」的模型 —— 实测两号时 33 个里有 24 个是这种。
-  // 不标出来的话，用户会照着列表一个个试，试一个错一个，还以为是反代坏了。
-  const unavail = (S.health && S.health.modelsUnavailable) || [];
+
+  const tg = $("#mdlToggleUnavail");
+  if (tg) {
+    if (badCount) {
+      tg.style.display = "";
+      tg.textContent = mdlShowUnavail
+        ? "隐藏打不通的 " + badCount + " 个"
+        : "显示打不通的 " + badCount + " 个";
+      if (!tg.dataset.bound) {
+        tg.dataset.bound = "1";
+        tg.addEventListener("click", () => {
+          mdlShowUnavail = !mdlShowUnavail;
+          renderModels();
+        });
+      }
+    } else {
+      tg.style.display = "none";
+    }
+  }
+
   const box = $("#mdlUnavail");
   if (box) {
-    if (unavail.length) {
+    if (badCount) {
+      const probe = (S.health && S.health.modelProbe) || null;
+      const when = probe && probe.lastProbeAt
+        ? "上次探测 " + new Date(probe.lastProbeAt).toLocaleString() +
+          "（探了 " + probe.probed + " 个）"
+        : "还没探测过";
+      // ⚠️ 这段文案要和 src/server.mjs 的实际行为对上。以前写的是
+      // "它们仍然留在 /v1/models 里"，但那个行为已经改了 —— 现在默认是
+      // **从 /v1/models 里去掉**，所以这里必须跟着改，不然面板在骗用户。
+      //
+      // 名单本身不再常驻在这里：一长串模型名占半屏，真正要核对的时候才需要。
+      // 想看得点上面的「显示打不通的 N 个」，那时候下面的表里会带上红色标签。
       box.style.display = "";
-      box.innerHTML = "有 <b>" + unavail.length + "</b> 个模型上游用不了（试过之后被全部凭据拒绝）：" +
-        '<span class="mono" style="font-size:12px">' + esc(unavail.join("、")) + "</span><br>" +
-        "这些是<b>上游网关</b>说不行（没权限 / 名字不认），不是反代的问题 —— 换账号也一样。" +
-        "它们仍然留在 /v1/models 里（客户端配置不用改），但打过去会直接收到 400，不会再白等重试。";
+      box.innerHTML = "<b>" + badCount + "</b> 个模型打不通（上游网关说不行：没权限 / 名字不认，换账号也一样），" +
+        "已从 <code>/v1/models</code> 和上面的列表里隐藏。" +
+        '<span class="dim" style="font-size:12px">　' + when + "</span>" +
+        '<button class="btn" id="btnProbeModels" style="margin-left:10px">重探一遍</button>';
+      const bp = $("#btnProbeModels");
+      if (bp && !bp.dataset.bound) {
+        bp.dataset.bound = "1";
+        bp.addEventListener("click", async () => {
+          const old = bp.textContent;
+          bp.disabled = true;
+          bp.textContent = "探测中…（要 1~2 分钟）";
+          try {
+            // ⚠️ 这里必须用 `json:` 而不是 `body:` —— api() 只认 json，
+            // 写 body 会静默发出空 body（见 api() 上面那段注释）。
+            const r = await api("admin/api/models/probe?force=1", { method: "POST", json: {} });
+            toast("探测完成：探了 " + r.probed + " 个，打不通 " + r.unavailable.length + " 个", "ok");
+            await poll();
+          } catch (e) {
+            toast("探测失败：" + e.message, "err");
+          } finally {
+            bp.disabled = false;
+            bp.textContent = old;
+          }
+        });
+      }
     } else {
       box.style.display = "none";
     }
@@ -1227,7 +1294,8 @@ function renderModels() {
         "<code>" + esc(m.id) + "</code>",
         esc(m.developer),
         '<span class="dim">' + esc(m.context) + "</span>",
-        (m.toolCall ? '<span class="tag ok">工具</span>' : "") + (m.reasoning ? '<span class="tag a">推理</span>' : "") || '<span class="dim">-</span>',
+        ((m.toolCall ? '<span class="tag ok">工具</span>' : "") + (m.reasoning ? '<span class="tag a">推理</span>' : "") +
+          (unavailSet.has(m.id) ? '<span class="tag err">打不通</span>' : "")) || '<span class="dim">-</span>',
         cell,
         '<span class="tag">' + esc(m.source) + "</span>",
         '<button class="ghost mini" data-test="' + esc(m.id) + '">测试</button> ' +
