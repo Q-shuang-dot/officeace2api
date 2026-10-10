@@ -28,6 +28,10 @@ Continue、Cursor、Dify、沉浸式翻译、OpenAI SDK……
 > 控制台默认带**面板口令**校验（首次启动自动生成，见下面的「快速开始」）。
 > 打开时地址要带 `?token=`，或者请求头带 `x-admin-token`。
 > 想退回"本机自用不校验"，把 `config.json` 里的 `admin.token` 改成 `""` 即可。
+> （`open-panel.cmd` 会自动带上口令，日常用不用手记。）
+
+**本机自用建议**：把带口令的地址存成书签。面板前端会从 URL 读口令并发到每个请求上，
+所以收藏夹里点开就直接进，不用每次去翻 `config.json`。
 
 | 菜单 | 干什么 |
 |---|---|
@@ -277,6 +281,10 @@ officeace2api/
 - `node tools/diag-body-too-large.mjs` —— 超大请求体应该回 413 而不是 429
 - `node tools/diag-admin-auth.mjs` —— 核对面板鉴权（不带 / 对 / 错口令，以及 ?token= 那条路）
 - `node tools/diag-portability.mjs` —— 看 data/ 里的凭据形态（判断能不能拷贝给别人）
+- `node tools/diag-local-daily.mjs` —— **本机日常自用体检**：七个菜单的真实接口 + 面板调的路径是否都存在
+- `node tools/diag-panel-api.mjs` —— **把面板的 `api()` 抠出来真跑**（验 `{json:{…}}` 和 `{json:true, body}` 两种写法）
+- `node tools/diag-fresh-clone.mjs` —— **模拟别人 clone 下来**：只拷 git 跟踪的文件到干净目录起服务
+- `node tools/diag-ghost-accounts.mjs` —— 证明 `labels` 不会造出"幽灵账号"
 
 ---
 
