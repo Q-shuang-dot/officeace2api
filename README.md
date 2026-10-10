@@ -1,5 +1,7 @@
 # officeace2api
 
+**简体中文** | [English](README.en.md)
+
 把一个模型网关反代成一整套标准 **OpenAI 兼容 API**，并自带一个中文控制台。
 
 **零依赖** —— 只用 Node.js 内置模块，不用 `npm install`。
