@@ -92,10 +92,19 @@ function Install-Task {
     $action = New-ScheduledTaskAction -Execute $psExe `
         -Argument ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $watchdog + '"') `
         -WorkingDirectory $Root
+    # -DontStopOnIdleEnd is NOT optional. New-ScheduledTaskSettingsSet defaults
+    # StopOnIdleEnd to true, and Task Scheduler then kills the whole task --
+    # watchdog plus the node child -- every time the machine leaves idle state.
+    # Symptom: the service dies within minutes of you touching the keyboard and
+    # comes back ~1 min later via RestartOnFailure. watchdog.log fills up with
+    # "watchdog up" / "starting server" pairs and almost no "server exited"
+    # line, because the watchdog itself was killed mid WaitForExit(). That also
+    # throws away every in-memory counter (stats baseline, credit cache), so the
+    # panel appears to reset itself for no reason.
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -Hidden -RestartCount 3 `
         -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew `
-        -StartWhenAvailable
+        -StartWhenAvailable -DontStopOnIdleEnd
     $user = "$env:USERDOMAIN\$env:USERNAME"
     $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive
     $desc = 'officeace2api - OpenAI compatible API proxy for the local OfficeAce client'

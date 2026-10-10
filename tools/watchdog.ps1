@@ -103,8 +103,27 @@ if (-not $node) {
 Write-Log "watchdog up: node=$node root=$Root pid=$PID"
 
 $consecutiveFastExits = 0
+$adopted = $false
 while ($true) {
     Clear-Port -LocalPort $Port
+
+    # A server can outlive its watchdog: Stop-ScheduledTask kills the task's
+    # process tree, but a node launched through Start-Process does not always
+    # go with it. Clear-Port deliberately refuses to touch a *healthy*
+    # instance, so without this check we would start a second one right after
+    # -- it dies instantly on the single-instance lock, we see a fast exit and
+    # start yet another, and the loop spins forever writing two log lines every
+    # few seconds. If something is already answering on the port, adopt it:
+    # watch from a distance and wait for it to actually go away.
+    if (Test-Serving -LocalPort $Port) {
+        if (-not $adopted) {
+            Write-Log "port $Port already served by an orphan instance - adopting it, not starting a second one"
+            $adopted = $true
+        }
+        Start-Sleep -Seconds 15
+        continue
+    }
+    $adopted = $false
 
     $started = Get-Date
     Write-Log "starting server"
