@@ -307,9 +307,12 @@ officeace2api/
 
 ## 九、参与贡献
 
-欢迎改进本项目！两条路：
+欢迎改进本项目！三条路：
 
-- **只想反馈问题 / 提建议** → 直接开
+- **只是想问问题 / 聊玩法** → 去
+  [Discussions](https://github.com/Q-shuang-dot/officeace2api/discussions)，
+  不适合开 Issue 的内容放这里。
+- **反馈 Bug / 提建议** → 直接开
   [Issue](https://github.com/Q-shuang-dot/officeace2api/issues/new/choose)，
   有对应模板，不用写代码。
 - **想改代码** → 先读 **[CONTRIBUTING.md](CONTRIBUTING.md)**，再 Fork → 建分支 → 提 PR。

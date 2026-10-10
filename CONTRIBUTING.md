@@ -179,6 +179,9 @@ GitHub 会自动弹出 **Compare & pull request** 横幅，点它，按模板把
 
 不会写代码完全没问题。反馈问题和提建议同样是贡献：
 
+- **使用问题 / 配置求助 / 随便聊聊** → 去
+  [Discussions](https://github.com/Q-shuang-dot/officeace2api/discussions)，
+  这类内容不适合开 Issue。
 - **报 Bug** → 用 [Bug 报告](https://github.com/Q-shuang-dot/officeace2api/issues/new?template=bug_report.md) 模板，
   里面要求的信息（`status.cmd` 输出、`logs\server.log` 片段、复现步骤）尽量填全，
   否则很难定位。

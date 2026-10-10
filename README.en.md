@@ -323,9 +323,11 @@ officeace2api/
 
 ## Contributing
 
-Contributions are welcome. Two paths:
+Contributions are welcome. Three paths:
 
-- **Report a problem or suggest a feature** → open an
+- **Just have a question or want to chat** → use
+  [Discussions](https://github.com/Q-shuang-dot/officeace2api/discussions).
+- **Report a bug or suggest a feature** → open an
   [issue](https://github.com/Q-shuang-dot/officeace2api/issues/new/choose).
   Templates are provided and no coding is required.
 - **Submit code** → read **[CONTRIBUTING.md](CONTRIBUTING.md)** first (Chinese),
