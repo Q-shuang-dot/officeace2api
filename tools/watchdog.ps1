@@ -68,10 +68,22 @@ function Resolve-NodePath {
 # But only when it is actually dead. An earlier version killed whatever held
 # the port unconditionally, which let two watchdogs take turns killing each
 # other's perfectly healthy server.
+# Liveness must be probed with /healthz, NOT /admin/api/state. Two traps:
+#   * state is the heaviest endpoint (full model list + pool + config + usage),
+#     so a busy server blows past the timeout. Observed 12:00 local: during a
+#     model probe, state took longer than 10s to answer -- the watchdog then
+#     concluded "nothing is serving the port", started a second node, that one
+#     hit data/instance.lock and exited 1, and the loop ran 8 times before
+#     Task Scheduler restarted the task.
+#   * once config.admin.token is set, state answers 401 (see the isAdminRoute
+#     gate in server.mjs) -- the watchdog would treat EVERY healthy instance as
+#     dead, kill it and restart forever.
+# healthz is a fixed few hundred bytes and bypasses the admin token, so it is
+# the correct liveness probe.
 function Test-Serving {
     param([int]$LocalPort)
     try {
-        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$LocalPort/admin/api/state" -TimeoutSec 3 -UseBasicParsing
+        $r = Invoke-WebRequest -Uri "http://127.0.0.1:$LocalPort/healthz" -TimeoutSec 5 -UseBasicParsing
         return ($r.StatusCode -eq 200)
     } catch { return $false }
 }
