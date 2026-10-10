@@ -24,7 +24,15 @@ schtasks /query /tn "officeace2api" >nul 2>nul && set "USE_TASK=1"
 
 if "%USE_TASK%"=="1" (
   echo [*] starting via scheduled task "officeace2api" ...
-  schtasks /run /tn "officeace2api" >nul
+  rem A task that EXISTS but is DISABLED makes "schtasks /run" fail. The old code
+  rem ignored that and fell straight into the 30-iteration health wait - a silent
+  rem 60-second hang ending in a bare "pause". Check the exit code and fall back.
+  schtasks /run /tn "officeace2api" >nul 2>nul
+  if errorlevel 1 (
+    echo [!] task exists but would not start ^(disabled, or needs elevation^)
+    echo     falling back to run-bg.cmd ...
+    start "officeace2api" /min cmd /c "run-bg.cmd"
+  )
 ) else (
   echo [*] starting officeace2api ...
   start "officeace2api" /min cmd /c "run-bg.cmd"
