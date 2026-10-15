@@ -113,11 +113,6 @@ export function home() {
   return process.env.OFFICEACE_HOME || os.homedir();
 }
 
-export function shortId(id, len = 10) {
-  const s = String(id || '');
-  return s.length > len ? `${s.slice(0, len)}…` : s;
-}
-
 export function maskSecret(secret) {
   const s = String(secret || '');
   if (s.length <= 12) return '***';

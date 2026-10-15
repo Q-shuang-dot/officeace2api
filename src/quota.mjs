@@ -41,7 +41,7 @@ const log = createLogger('quota');
 /** AgentArts 总控域名（提供 /v1/claw/* 和默认的订阅入口） */
 export const DEFAULT_AGENTARTS_BASE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
 /** 默认模型网关（订阅接口主要在这里） */
-export const DEFAULT_GATEWAY = 'https://modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com';
+const DEFAULT_GATEWAY = 'https://modelgw-0004.officeace.cn-southwest-2.huaweicloud-agentarts.com';
 const DEFAULT_REGION = 'cn-southwest-2';
 /** V11 的 CredentialScope 服务名，APIG 固定 apic */
 const SCOPE_SERVICE = 'apic';
@@ -150,12 +150,12 @@ const ms = (v) => {
 };
 
 /** 套餐档位：officeace.personal.package.trial → trial */
-export function tierOf(skuCode) {
+function tierOf(skuCode) {
   const last = String(skuCode || '').split('.').pop() || '';
   return last || 'trial';
 }
 
-export const TIER_NAMES = {
+const TIER_NAMES = {
   trial: '试用版',
   starter: '入门版',
   standard: '标准版',
@@ -172,7 +172,7 @@ const SUBSCRIBE_STATUS = {
 };
 
 /** 北京时间（UTC+8）的 YYYY-MM-DD */
-export function bjDay(ts) {
+function bjDay(ts) {
   const t = typeof ts === 'number' ? ts : Date.parse(ts);
   if (!Number.isFinite(t)) return '';
   return new Date(t + 8 * 3600 * 1000).toISOString().slice(0, 10);
@@ -322,7 +322,7 @@ function sum(list) {
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
-export function fmtPoints(n) {
+function fmtPoints(n) {
   const v = Number(n) || 0;
   if (Math.abs(v - Math.round(v)) < 0.005) return String(Math.round(v));
   return v.toFixed(2);
@@ -331,7 +331,7 @@ export function fmtPoints(n) {
 /* ============================================================ 服务 */
 
 /** 面板用的「一行看懂」文字卡，纯 ASCII + 中文，复制到哪里都不乱码 */
-export function renderText(summary) {
+function renderText(summary) {
   if (!summary?.ok) {
     return summary?.error ? `拿不到积分额度：${summary.error}` : '还没查询过积分额度';
   }

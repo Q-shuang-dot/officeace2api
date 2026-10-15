@@ -2128,6 +2128,54 @@ console.log('\n[上游分类：请求体太大 ≠ 限流]');
   else bad('裸 429 被误判', JSON.stringify({ r: bare.rateLimited, t: bare.requestTooLarge }));
 }
 
+/* ── 上游错误装在 SSE 帧里：以前 code 恒空、message 是整段原始帧 ────────── */
+//
+// 反代是拿 `stream: true` 打上游的，所以上游的错误是**装成 SSE 帧**回来的：
+//
+//   data:{"error":{"code":"ModelArts.81001","message":"Invalid max_tokens value: -5, …"}}
+//
+// 而 `classifyUpstream` 起初只认「整段以 `{` 开头」，于是这种 body 一律解析失败：
+//   · 客户端收到 `上游请求失败: data:{\"error\":{\"code\":\"…\"}}` —— 看不懂、没法按 code 分支；
+//   · 日志里 `"code":""`，`payload` 为 null，`81004/81009/81001/81113` 那套判断
+//     全靠 message 里的原文兜着。
+// 实测原文见 `logs/server.err.log`（`上游明确拒绝这个请求，不再重试 {"code":""…}`）。
+console.log('\n[上游分类：错误体是 SSE 帧时也要能解析]');
+{
+  const { classifyUpstream } = await import('../src/upstream.mjs');
+  const frame = (code, message) =>
+    `data:${JSON.stringify({ error: { code, message, param: null, type: 'BadRequest' }, error_code: code })}`;
+
+  // ① 流式错误帧：code / message / payload 三样都要出来
+  const sse = classifyUpstream(400, frame('ModelArts.81001', 'Invalid max_tokens value: -5, max_tokens must be between 0 and 131072.'));
+  if (sse.code === 'ModelArts.81001') ok('SSE 帧里的 code 能取出来');
+  else bad('SSE 帧的 code 没取到（客户端和日志都看不到上游的错误码）', JSON.stringify(sse.code));
+  if (sse.message.startsWith('Invalid max_tokens value')) ok('message 是干净的原话，不带 data: 前缀和转义');
+  else bad('message 还是整段原始帧', sse.message.slice(0, 60));
+  if (sse.payload && typeof sse.payload === 'object') ok('payload 有值（后续能按字段判断，不再只能啃字符串）');
+  else bad('payload 仍是 null');
+  if (sse.badRequest) ok('SSE 帧的 81001 仍然被判成 badRequest');
+
+  // ② 多帧 / 空行 / [DONE]：真实 SSE 流里就长这样
+  const multi = classifyUpstream(403, '\ndata:{"error":{"code":"ModelArts.81004","message":"Insufficient permission"}}\n\ndata:[DONE]\n');
+  if (multi.code === 'ModelArts.81004' && multi.modelRejected) ok('多帧 + [DONE] 里也能取到 code（81004 → 模型没权限）');
+  else bad('多帧 SSE 没解析对', JSON.stringify({ code: multi.code, modelRejected: multi.modelRejected }));
+
+  // ③ 前面裹着杂字符（日志里真有 `^C` 那种）
+  const junk = classifyUpstream(429, '^Cdata:{"error":{"code":"ModelArts.81113","message":"Invalid request body, exceeds the maximum size"}}');
+  if (junk.code === 'ModelArts.81113' && junk.requestTooLarge) ok('带杂字符前缀的帧也能解析（81113 → 请求体太大）');
+  else bad('带前缀的帧没解析出来', JSON.stringify({ code: junk.code, tooLarge: junk.requestTooLarge }));
+
+  // ④ 反向对照：不是 JSON 的文本别被硬掰
+  const notJson = classifyUpstream(500, 'gateway exploded');
+  if (notJson.code === '' && notJson.message === 'gateway exploded' && notJson.payload === null) ok('不是 JSON 时老实回退成原文，不编造 code');
+  else bad('非 JSON 的 body 被掰出了假字段', JSON.stringify({ code: notJson.code, payload: notJson.payload }));
+
+  // ⑤ 反向对照：非流式的裸 JSON 行为一点没变
+  const plain = classifyUpstream(400, '{"error":{"code":"ModelArts.81001","message":"bad param"}}');
+  if (plain.code === 'ModelArts.81001' && plain.message === 'bad param' && plain.payload) ok('裸 JSON（非流式）行为不变');
+  else bad('裸 JSON 那条路径被改坏了', JSON.stringify({ code: plain.code, message: plain.message }));
+}
+
 /* ── 面板鉴权：空口令 = 完全不校验，这是真问题 ─────────────────────── */
 //
 // 路由里那条校验是：

@@ -40,13 +40,12 @@ import { writeFileSecure } from './util.mjs';
 
 const log = createLogger('oauth');
 
-export const DEFAULT_CLOUD_BASE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
-export const DEFAULT_AUTH_BASE = 'https://auth.huaweicloud.com';
-export const DEFAULT_REDIRECT_URI = `${DEFAULT_CLOUD_BASE}/v1/claw/auth/callback`;
-export const DEFAULT_REGION = 'cn-southwest-2';
+const DEFAULT_CLOUD_BASE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
+const DEFAULT_AUTH_BASE = 'https://auth.huaweicloud.com';
+const DEFAULT_REDIRECT_URI = `${DEFAULT_CLOUD_BASE}/v1/claw/auth/callback`;
 
 /** 登录会话的存活时间，和 OfficeAce 的 DEFAULT_STATE_TTL_MS 保持一致 */
-export const LOGIN_TTL_MS = 10 * 60 * 1000;
+const LOGIN_TTL_MS = 10 * 60 * 1000;
 /** 轮询授权码的间隔 */
 const POLL_INTERVAL_MS = 2500;
 /** 授权码还没好时云端返回的状态码 */
@@ -59,7 +58,7 @@ const CODE_NOT_READY = 202;
  * 一个脚本连点（或者面板被卡住重复发）就能攒出几十个，等于拿你的账号去压
  * 华为云 —— 轻则被限流，重则影响这个号的正常调用。
  */
-export const MAX_PENDING_SESSIONS = 5;
+const MAX_PENDING_SESSIONS = 5;
 
 const bgImg = 'https://res.hc-cdn.com/AgentArts-Console/26.4.7/hws/assets/login/bg2.png';
 const adImg = 'https://res.hc-cdn.com/AgentArts-Console/26.4.7/hws/assets/login/ad2.png';
@@ -79,7 +78,7 @@ export function generatePkce() {
  * 生成一对 P-256 的 DPoP 密钥。
  * 私钥（d）只留本地；对外发的 proof JWT 里只带公钥。
  */
-export async function generateDpopKeyPair() {
+async function generateDpopKeyPair() {
   const pair = await crypto.webcrypto.subtle.generateKey(
     { name: 'ECDSA', namedCurve: 'P-256' },
     true,

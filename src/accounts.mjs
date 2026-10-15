@@ -37,7 +37,7 @@ const SCAN_HEARTBEAT_MS = 5 * 60 * 1000;
 
 /* ------------------------------------------------------------------ 工具 */
 
-export function decodeUserId(dirName) {
+function decodeUserId(dirName) {
   try {
     return decodeURIComponent(dirName);
   } catch {
@@ -70,7 +70,7 @@ function authOf(headers) {
 }
 
 /** Basic base64(AK:SK) 拆成 AK/SK */
-export function parseBasicAuthorization(value) {
+function parseBasicAuthorization(value) {
   const m = /^Basic\s+(.+)$/i.exec(String(value || '').trim());
   if (!m) return null;
   let decoded;
@@ -92,7 +92,7 @@ export function parseBasicAuthorization(value) {
  *   key   = sha256(installSecret)
  *   alg   = aes-256-gcm，iv/tag/data 都是 base64url
  */
-export function decryptOauthProfile(installSecret, payload) {
+function decryptOauthProfile(installSecret, payload) {
   if (!payload || payload.version !== 1 || payload.alg !== 'aes-256-gcm') return null;
   const key = sha256(installSecret);
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(payload.iv, 'base64url'));
@@ -178,7 +178,7 @@ function dataRoots(installDirs = []) {
  * 读 src/oauth.mjs 落盘的「自己登进来的账号」。
  * 文件里有 refresh_token 和 DPoP 私钥，所以只读不写；写由 oauth.mjs 负责。
  */
-export function loadOauthAccounts(file) {
+function loadOauthAccounts(file) {
   if (!file) return {};
   const doc = readJson(file);
   return doc && typeof doc === 'object' ? doc : {};

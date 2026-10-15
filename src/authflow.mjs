@@ -86,7 +86,7 @@ function isRateLimited(res) {
  * 拿它当账号 ID 只会造出一个永远对不上号的幽灵键。
  * 宁可判"还没好、下一轮再看"，也不要写进盘里。
  */
-export function isRealUserId(userId) {
+function isRealUserId(userId) {
   return /^[0-9a-f]{32}$/.test(String(userId || '').trim());
 }
 
@@ -442,7 +442,7 @@ export class AuthFlow {
 }
 
 /** 从 authorizeUrl 里拆出华为登录页 + 内层 OAuth 参数 */
-export function describeAuthorizeUrl(authorizeUrl) {
+function describeAuthorizeUrl(authorizeUrl) {
   try {
     const outer = new URL(authorizeUrl);
     const service = outer.searchParams.get('service');
@@ -466,5 +466,3 @@ function extractState(authorizeUrl) {
   const d = describeAuthorizeUrl(authorizeUrl);
   return d?.state || '';
 }
-
-export { DEFAULT_APP_CANDIDATES, CLOUD_BASE, STATE_TTL_MS };

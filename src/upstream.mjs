@@ -12,7 +12,7 @@
 import { trimSlash, randId } from './util.mjs';
 
 /** 已知上游对部分参数敏感的能力表 */
-export const MODEL_QUIRKS = {
+const MODEL_QUIRKS = {
   'glm-5.3': { noThinking: true },
   'glm-5.3-test': { noThinking: true },
   'glm-5.3-zx': { noThinking: true },
@@ -162,11 +162,11 @@ export function takeBumpNote(body) {
   return b;
 }
 
-export function upstreamUrl(credential, suffix = '/chat/completions') {
+function upstreamUrl(credential, suffix = '/chat/completions') {
   return `${trimSlash(credential.baseUrl)}${suffix}`;
 }
 
-export function upstreamHeaders(credential, { stream = true, extraHeaders = {} } = {}) {
+function upstreamHeaders(credential, { stream = true, extraHeaders = {} } = {}) {
   return {
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
@@ -198,17 +198,63 @@ export async function postChat(credential, body, { timeoutMs = 600000, extraHead
   }
 }
 
-/** 上游错误分类 */
-export function classifyUpstream(status, text) {
-  let payload = null;
+/**
+ * 从上游的错误响应里把 JSON 挖出来。
+ *
+ * 上游的错误**不一定是一段裸 JSON** —— 反代是拿 `stream: true` 打上游的
+ * （见上面 postChat），错误就是装在 **SSE 帧**里回来的：
+ *
+ *   data:{"error":{"code":"ModelArts.81001","message":"Invalid max_tokens value: -5, …"}}
+ *
+ * 以前这里只判断 `trimmed.startsWith('{')`，于是这种 body 一律解析失败，
+ * 两个后果（都实测过）：
+ *
+ *   · 客户端收到的是**整段原始帧**，`code` 是空的：
+ *       "上游请求失败: data:{\"error\":{\"code\":\"ModelArts.81001\",…}}"
+ *     既看不懂、也没法按 code 分支；
+ *   · 下面那些 `81004 / 81009 / 81001 / 81113` 的判断只能靠 message 里的
+ *     原文兜着（`code` 为空），日志里也全是 `"code":""`。
+ *
+ * 现在按「裸 JSON → 逐行剥 `data:` → 整段里夹着一坨 JSON」的顺序找。
+ */
+function parseUpstreamErrorBody(text) {
   const trimmed = String(text || '').trim();
+  if (!trimmed) return null;
   if (trimmed.startsWith('{')) {
     try {
-      payload = JSON.parse(trimmed);
+      return JSON.parse(trimmed);
     } catch {
-      payload = null;
+      /* 落下去按 SSE 找我 */
     }
   }
+  for (const raw of trimmed.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line.startsWith('data:')) continue;
+    const body = line.slice(5).trim();
+    if (!body || body === '[DONE]') continue;
+    try {
+      return JSON.parse(body);
+    } catch {
+      /* 这一帧不是 JSON，看下一帧 */
+    }
+  }
+  // 兜底：整段首尾裹着别的文字（比如 `^C`、进度字符）
+  const first = trimmed.indexOf('{');
+  const last = trimmed.lastIndexOf('}');
+  if (first >= 0 && last > first) {
+    try {
+      return JSON.parse(trimmed.slice(first, last + 1));
+    } catch {
+      /* 解析不了就老实返回 null */
+    }
+  }
+  return null;
+}
+
+/** 上游错误分类 */
+export function classifyUpstream(status, text) {
+  const payload = parseUpstreamErrorBody(text);
+  const trimmed = String(text || '').trim();
   const errObj = payload?.error && typeof payload.error === 'object' ? payload.error : payload;
   const code = String(errObj?.code || payload?.error_code || '').trim();
   const message = String(errObj?.message || payload?.error_msg || payload?.message || trimmed || `HTTP ${status}`).trim();

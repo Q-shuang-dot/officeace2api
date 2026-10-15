@@ -19,7 +19,7 @@
  */
 
 /** 归一化账号 ID：目录名可能是 URL 编码过的 */
-export function normalizeAccountId(value) {
+function normalizeAccountId(value) {
   const raw = String(value ?? '').trim();
   if (!raw) return '';
   try {

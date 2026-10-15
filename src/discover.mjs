@@ -253,7 +253,7 @@ export function discover({ installDirs = [] } = {}) {
   return { credentials, catalog };
 }
 
-export function extractBaseFromAny(obj) {
+function extractBaseFromAny(obj) {
   if (!obj) return '';
   if (typeof obj === 'string') {
     const parsed = safeJson(obj);
@@ -261,5 +261,3 @@ export function extractBaseFromAny(obj) {
   }
   return trimSlash(obj.api_base || obj.baseUrl || '');
 }
-
-export { candidateRoots as _discoveryRoots };

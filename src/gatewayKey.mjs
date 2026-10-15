@@ -28,13 +28,13 @@ import { signV4 } from './quota.mjs';
 const log = createLogger('gateway-key');
 
 /** 控制面（不是模型网关）—— `client-permission-validate` 在这边 */
-export const CONTROL_PLANE_BASE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
+const CONTROL_PLANE_BASE = 'https://agentarts.cn-southwest-2.myhuaweicloud.com';
 
 /**
  * 这个账号缺不缺网关凭据？
  * @returns {boolean}
  */
-export function needsGatewayCredential(acc) {
+function needsGatewayCredential(acc) {
   return !!acc && (acc.credentials?.length || 0) === 0;
 }
 
@@ -46,7 +46,7 @@ export function needsGatewayCredential(acc) {
  * @param {{ accounts: import('./accounts.mjs').AccountStore, credits: any, controlPlaneBase?: string }} deps
  * @returns {Promise<{ok:true, appKey:string, appSecret:string, baseUrl:string, accountId:string, principalId:string, credentialSource:string} | {ok:false, error:string, stage:string}>}
  */
-export async function fetchGatewayKey(accountId, { accounts, credits, controlPlaneBase = CONTROL_PLANE_BASE } = {}) {
+async function fetchGatewayKey(accountId, { accounts, credits, controlPlaneBase = CONTROL_PLANE_BASE } = {}) {
   const id = String(accountId || '');
   if (!accounts || !credits) return { ok: false, error: '缺少依赖（accounts / credits）', stage: 'setup' };
   const acc = accounts.get(id);

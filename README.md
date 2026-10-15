@@ -280,7 +280,7 @@ officeace2api/
 ├── docs/                                  控制台截图 + 技术笔记
 ├── data/                                  运行期数据（不进仓库）
 │   └── register-tasks.json                注册队列落盘（重启不丢任务）
-└── logs/                                  日志（不进仓库，滚动留 3 份）
+└── logs/                                  日志（不进仓库；server.log 与 server.err.log 都留 3 份）
 ```
 
 ---
@@ -290,8 +290,9 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
-- `node tools/test-admin.mjs` —— 控制台接口自测（269 项，含配置卫生：死配置检测、
-  日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie）
+- `node tools/test-admin.mjs` —— 控制台接口自测（277 项，含配置卫生：死配置检测、
+  日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie、
+  上游错误体装在 SSE 帧里也要能解析出 `code`/`message`）
 - `node tools/test-dpapi.mjs` —— DPAPI 解密链（13 项，起子进程真解密：真 blob 往返 /
   缓存 / 连续失败进冷却）
 - `node tools/test-register.mjs` —— 批量注册状态机（36 项，不碰网络：去重 / 暂停不跑 /
@@ -301,6 +302,9 @@ officeace2api/
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
 - `node tools/test-models.mjs` —— 模型注册表的大小写与去重（14 项：大小写归一 / 上游给
   同一模型两个拼法时只留一条 / 未知名字不许被"造"出来 / 别名与隐藏也大小写不敏感）
+- `node tools/test-exports.mjs` —— 源码卫生：`src` 里每个 `export` 都必须有人消费（9 项；
+  含四个"这套判定本身还活着吗"的对照：一定被 import 的名字 / 编造的名字 /
+  多行 import 里的名字 / 消费者索引规模）
 - `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（54 项，含 **4b**：
   号池没变时只复核"打不通"的那批 —— 上游后来开了权限要能自己放回 `/v1/models`）
 - `node tools/test-authflow-poll.mjs` —— 一键授权的轮询节奏测试（27 项，把 `node:https` 换成假的**数请求次数**：
