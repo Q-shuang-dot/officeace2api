@@ -299,7 +299,10 @@ officeace2api/
 - `node tools/test-logger.mjs` —— 日志落盘与滚动（9 项：留 3 代历史 / 本机时间列 vs
   UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
-- `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（41 项）
+- `node tools/test-models.mjs` —— 模型注册表的大小写与去重（14 项：大小写归一 / 上游给
+  同一模型两个拼法时只留一条 / 未知名字不许被"造"出来 / 别名与隐藏也大小写不敏感）
+- `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（54 项，含 **4b**：
+  号池没变时只复核"打不通"的那批 —— 上游后来开了权限要能自己放回 `/v1/models`）
 - `node tools/test-authflow-poll.mjs` —— 一键授权的轮询节奏测试（27 项，把 `node:https` 换成假的**数请求次数**：
   未到点不碰云端 / 四路并发只发一次 / 被限流就指数退避到 60 秒封顶 / 「还没好」不许被记成事件）
 - `node tools/stress-deep41.mjs` —— 大批量压测：长会话 / 长上下文 / 高并发 / 全模型混打（会真花额度，`--all` 拉满）

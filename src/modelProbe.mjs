@@ -203,7 +203,7 @@ export class ModelProbe {
      * 就再也见不到它们。
      */
     const aliasNames = new Set(Object.keys(this.registry?.alias || {}));
-    const targets = list.filter((m) => !aliasNames.has(m));
+    let targets = list.filter((m) => !aliasNames.has(m));
     if (!targets.length) {
       return { probed: 0, unavailable: [...this.unavailable], skipped: true, reason: '目录里全是别名，没有真要探的模型' };
     }
@@ -213,6 +213,8 @@ export class ModelProbe {
     // 池子是空的就别探（探不了），而且**不能把结论清空** ——
     // 清了会让好模型被当成"没探过"从而全部列出来，等于白探一场。
     if (!creds) return { probed: 0, unavailable: [...this.unavailable], skipped: true, reason: '凭据池是空的，等有号了再探' };
+    // 只复核一部分时为 true：日志和返回值跟着区分
+    let partial = false;
     if (!force) {
       // TTL 是"多久允许打上游一次"的额度，所以它对**任何**重探都生效。
       // 号池变了也只是"TTL 过了之后值得再探一次"的理由，不是绕过 TTL 的理由 ——
@@ -220,9 +222,23 @@ export class ModelProbe {
       if (this.lastProbeAt && Date.now() - this.lastProbeAt < ttl) {
         return { probed: 0, unavailable: [...this.unavailable], skipped: true, reason: '还没到下次探测时间' };
       }
-      // TTL 过了、号池也没变 → 上次的结论还能用，不用重打
       if (this.lastProbeAt && this.probedWithCredentials && creds === this.probedWithCredentials) {
-        return { probed: 0, unavailable: [...this.unavailable], skipped: true, reason: '号池没变，沿用上次结果' };
+        // 号池没变：判为**可用**的那批不必重探（它们很贵 —— 实测 glm-5.2 一次 15.7 秒，
+        // 是在真花积分做一次推理），判为**不可用**的那批必须复核：
+        // 上游给这个账号开权限、模型改名、上游临时故障恢复，都不会改我们的号池，
+        // 可它们恰恰会把一个模型从"不可用"变成能用。而这类复核几乎不花钱 ——
+        // 不可用的模型是在上游门口被拒的（实测 86~332ms）。
+        //
+        // 以前这里整批跳过，于是 lastProbeAt 不前进、这个分支**永远**成立：
+        // 一个被误判、或者上游后来开了权限的模型会一直留在 unavailable 里，
+        // 又因为 hideUnavailable 默认开着，它会直接从 /v1/models 消失，
+        // 只认手动点「重探一遍」这一条出路。
+        const again = targets.filter((m) => this.unavailable.has(m));
+        if (!again.length) {
+          return { probed: 0, unavailable: [...this.unavailable], skipped: true, reason: '号池没变，也没有待复核的模型' };
+        }
+        targets = again;
+        partial = true;
       }
     }
 
@@ -312,14 +328,20 @@ export class ModelProbe {
     this.prune(list);
     this.save();
 
-    this.log.info('模型可用性探测完成', {
+    this.log.info(partial ? '复核打不通的模型' : '模型可用性探测完成', {
       probed: targets.length,
       usable: targets.length - found.length,
       unavailable: found.length,
       seconds: Math.round((Date.now() - startedAt) / 1000),
     });
-    if (found.length) this.log.info('这些模型打不通，已从 /v1/models 里去掉', { models: found });
+    if (partial) {
+      const recovered = targets.filter((m) => !found.includes(m));
+      // 这条日志值得留着：模型"自己回来"了是件需要解释的事，不然用户只会觉得列表在变
+      if (recovered.length) this.log.info('上游后来开通了这些模型，已放回 /v1/models', { models: recovered });
+    } else if (found.length) {
+      this.log.info('这些模型打不通，已从 /v1/models 里去掉', { models: found });
+    }
 
-    return { probed: targets.length, unavailable: found, skipped: false };
+    return { probed: targets.length, unavailable: found, skipped: false, partial };
   }
 }

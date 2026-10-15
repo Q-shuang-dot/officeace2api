@@ -70,20 +70,64 @@ export class ModelRegistry {
       set.add(from);
       set.add(to);
     }
-    for (const id of this.hidden) set.delete(id);
-    return [...set].sort();
+    // hidden 也按大小写不敏感地匹配：配置里写 `kimi-k2.6` 也该把 `Kimi-K2.6` 藏掉
+    // （不然它会一边从列表里消失、一边还能被精确名字请求到）。
+    const hiddenLower = new Set([...this.hidden].map((x) => String(x).toLowerCase()));
+    // 大小写去重：上游会**把同一个模型列成两种拼法**（实测 `Kimi-K2.6` 和 `kimi-k2.6`
+    // 同时出现，两种拼法探测都返回 200）。不去重的话：客户端模型选择器里出现两条、
+    // 每轮探测多打一次上游、而冷却和「拒绝过这个模型」的标记是按精确字符串记的，
+    // 两种拼法各记一份、互相不生效。先出现的拼法为准（discovered → upstream → extra → 别名）。
+    const byLower = new Map();
+    for (const id of set) {
+      const key = String(id).toLowerCase();
+      if (hiddenLower.has(key)) continue;
+      if (!byLower.has(key)) byLower.set(key, id);
+    }
+    return [...byLower.values()].sort();
   }
 
-  /** 把客户端请求的模型名解析为上游真实模型名 */
+  /** 清单的「小写 → 清单里的拼法」索引，用于大小写不敏感地归一 */
+  idIndex() {
+    const map = new Map();
+    for (const id of this.ids()) {
+      const key = id.toLowerCase();
+      if (!map.has(key)) map.set(key, id);
+    }
+    return map;
+  }
+
+  /** 大小写不敏感地归一成清单里的那个拼法；清单里没有就原样返回（绝不凭空造模型） */
+  canonical(name) {
+    const want = String(name || '').trim();
+    if (!want) return '';
+    return this.idIndex().get(want.toLowerCase()) || want;
+  }
+
+  /**
+   * 把客户端请求的模型名解析为上游真实模型名。
+   *
+   * 别名先看，然后**按大小写不敏感**再看一遍 —— 上游网关本身对大小写不敏感
+   * （实测 `Kimi-K2.6` 和 `kimi-k2.6` 两种拼法都返回 200），而客户端手写模型名时
+   * 大小写经常跟清单不一致。以前这里只做精确匹配，于是 `KIMI-K2.6` 会一路走到
+   * `checkModel()` 的 404「没有这个模型」：**同一个模型换个大小写就用不了**，
+   * 而且报的是「模型不存在」这种最容易被当成上游抽风的错。
+   *
+   * 归一还有个副作用是好的：冷却、拒绝标记、探测结果都按返回的名字记账，
+   * 归一之后两种拼法不会再各记一份。
+   */
   resolve(requested) {
     const name = String(requested || '').trim();
     if (!name) return null;
-    if (this.alias[name]) return this.alias[name];
-    return name;
+    if (this.alias[name]) return this.canonical(this.alias[name]);
+    const lower = name.toLowerCase();
+    for (const [from, to] of Object.entries(this.alias)) {
+      if (String(from).toLowerCase() === lower) return this.canonical(to);
+    }
+    return this.canonical(name);
   }
 
   has(id) {
-    return this.ids().includes(String(id || '').trim());
+    return this.ids().includes(this.canonical(id));
   }
 
   defaultModel() {

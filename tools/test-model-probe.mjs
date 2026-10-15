@@ -134,7 +134,14 @@ console.log('\n【3】号池变了要重探，但**不能绕过 TTL**（TTL 是�
   if (grown.unavailable.size === 3) ok('新结论生效（新号能让 m-bad-1 用起来）', grown.unavailable.size + ' 个');
   else bad('新结论不对', JSON.stringify([...grown.unavailable]));
 
-  // ④ TTL 过了但号池没变 → 也不用重打（结论还能用）
+  // ④ TTL 过了但号池没变 → 判为「可用」的那批不重探，判为「不可用」的那批要复核。
+  //
+  // 老行为是整批跳过，于是 lastProbeAt 不前进、这个分支**永远**成立：
+  // 上游后来给账号开了权限（或当初判错了）的模型会一直留在 unavailable 里，
+  // 又因为 hideUnavailable 默认开着，它会直接从 /v1/models 消失，
+  // 只认手动点「重探一遍」。判断它贵不贵的时候容易搞反：真正贵的是探**可用**的
+  // 推理模型（实测 glm-5.2 一次 15.7 秒、真花积分），而「打不通」的请求
+  // 是在上游门口被拒的（实测 86~332ms）—— 所以要复核的恰恰是便宜的那批。
   const stale2 = JSON.parse(readFileSync(file, 'utf8'));
   stale2.lastProbeAt = Date.now() - 7 * 60 * 60 * 1000;
   stale2.probedWithCredentials = 'cred-a,cred-b';
@@ -142,8 +149,18 @@ console.log('\n【3】号池变了要重探，但**不能绕过 TTL**（TTL 是�
   const { fetchImpl: f4, calls: c4 } = makeFetch(['m-good-1']);
   const unchanged = new ModelProbe({ dataFile: file, config: {}, pool: makePool(['cred-a', 'cred-b']), registry: makeRegistry(MODELS), log: silent, fetchImpl: f4 });
   const r4 = await unchanged.probe();
-  if (c4.length === 0 && r4.skipped) ok('TTL 过了 + 号池没变 → 沿用上次结果，不打上游', r4.reason);
-  else bad('号池没变却重打了', String(c4.length));
+  const badOnes = [...grown.unavailable]; // 直接取上一步的结论（别硬编码：③ 的假上游让 m-bad-1 是好的）
+  if (badOnes.length === 3 && c4.length === 3 && c4.every((m) => badOnes.includes(m))) {
+    ok('号池没变 → 只复核打不通的 3 个，可用的一个都不打', `打了 ${c4.join(', ')}`);
+  } else {
+    bad('复核范围不对', JSON.stringify({ 上次结论: badOnes, 这次打了: c4 }));
+  }
+  if (r4.partial === true && r4.skipped === false) ok('返回值标了 partial（能区分"整批探"和"复核"）');
+  else bad('没标 partial', JSON.stringify(r4));
+  if (unchanged.unavailable.size === badOnes.length) ok('复核后结论正确：这几个现在还是打不通');
+  else bad('复核把结论弄丢了', JSON.stringify([...unchanged.unavailable]));
+  if (unchanged.lastProbeAt > Date.now() - 60000) ok('复核也推进 lastProbeAt（不然下一轮 TTL 永远算过期）');
+  else bad('复核没推进 lastProbeAt');
 }
 
 /* ================================================================ 4. TTL 过期要重探 */
@@ -176,6 +193,75 @@ console.log('\n【4】TTL 过期要重探');
   const r3 = await p3.probe();
   if (c3.length === 0 && r3.skipped) ok('probeTtlMs 配长时压得住（TTL 内一律不打上游）', r3.reason);
   else bad('长 TTL 没压住', String(c3.length));
+}
+
+/* ================================================================ 4b. 复核打不通的那批 */
+console.log('\n【4b】号池没变时复核"打不通"的那批（上游后来开了权限要能自己回来）');
+{
+  // 缓存：3 个打不通 / 号池指纹与当前一致 / TTL 已过
+  const seed = (file, unavailable, fingerprint = 'cred-a') =>
+    writeFileSync(
+      file,
+      JSON.stringify({ lastProbeAt: Date.now() - 7 * 60 * 60 * 1000, probedWithCredentials: fingerprint, unavailable, results: {} }),
+    );
+
+  // ① 上游这次给 m-bad-2 开了权限 → 必须从黑名单里出来
+  const file = path.join(tmp, 'p4b.json');
+  seed(file, ['m-bad-1', 'm-bad-2', 'm-bad-3']);
+  const { fetchImpl, calls } = makeFetch(['m-good-1', 'm-good-2', 'm-bad-2']);
+  const p = new ModelProbe({ dataFile: file, config: {}, pool: makePool(['cred-a']), registry: makeRegistry(MODELS), log: silent, fetchImpl });
+  const r = await p.probe();
+  if (calls.length === 3) ok('只打了那 3 个曾经的"打不通"', calls.join(', '));
+  else bad('复核范围不对', JSON.stringify(calls));
+  if (!p.isUnavailable('m-bad-2')) ok('m-bad-2 上游开通了 → 已放回（重新出现在 /v1/models）');
+  else bad('开通了却没放回', JSON.stringify([...p.unavailable]));
+  if (p.unavailable.size === 2 && p.isUnavailable('m-bad-1') && p.isUnavailable('m-bad-3')) ok('另外两个仍然打不通，结论没被冲掉');
+  else bad('结论被冲掉', JSON.stringify([...p.unavailable]));
+  if (r.unavailable.length === 2) ok('返回值里的名单也只剩 2 个');
+  else bad('返回值名单不对', JSON.stringify(r.unavailable));
+
+  // ② 日志得说清"它自己回来了"，否则用户只看到列表莫名其妙在变
+  const file2 = path.join(tmp, 'p4b2.json');
+  seed(file2, ['m-bad-1']);
+  const said = [];
+  const spy = { info: (msg, data) => said.push([msg, data]), warn() {}, debug() {} };
+  const { fetchImpl: f2 } = makeFetch(['m-good-1', 'm-bad-1']);
+  const p2 = new ModelProbe({ dataFile: file2, config: {}, pool: makePool(['cred-a']), registry: makeRegistry(MODELS), log: spy, fetchImpl: f2 });
+  await p2.probe();
+  const recovered = said.find(([msg]) => msg.includes('放回'));
+  if (recovered && recovered[1]?.models?.includes('m-bad-1')) ok(`放回时记了一条日志：${recovered[0]}`);
+  else bad('没有"放回"的日志', JSON.stringify(said.map(([m]) => m)));
+  if (said.some(([msg]) => msg.includes('复核'))) ok('标题用"复核"而不是"探测完成"（一眼能分清这次是哪种）');
+  else bad('日志标题没区分', JSON.stringify(said.map(([m]) => m)));
+
+  // ③ 没有待复核的 → 老老实实跳过（全部可用时这是常态，不能白打上游）
+  const file3 = path.join(tmp, 'p4b3.json');
+  seed(file3, []);
+  const { fetchImpl: f3, calls: c3 } = makeFetch(['m-good-1']);
+  const p3 = new ModelProbe({ dataFile: file3, config: {}, pool: makePool(['cred-a']), registry: makeRegistry(MODELS), log: silent, fetchImpl: f3 });
+  const r3 = await p3.probe();
+  if (c3.length === 0 && r3.skipped) ok('全都能用时：TTL 过了也一次不打', r3.reason);
+  else bad('没有待复核项却打了上游', String(c3.length));
+
+  // ④ 目录里已经没有那个名字了 → 不该为它打上游，顺手丢掉旧结论
+  const file4 = path.join(tmp, 'p4b4.json');
+  seed(file4, ['m-gone', 'm-bad-1']);
+  const { fetchImpl: f4, calls: c4 } = makeFetch(['m-good-1']);
+  const p4 = new ModelProbe({ dataFile: file4, config: {}, pool: makePool(['cred-a']), registry: makeRegistry(MODELS), log: silent, fetchImpl: f4 });
+  await p4.probe();
+  if (c4.length === 1 && c4[0] === 'm-bad-1') ok('只复核目录里还存在的（m-gone 已不在目录，不为它打上游）');
+  else bad('为不在目录里的名字打了上游', JSON.stringify(c4));
+  if (!p4.isUnavailable('m-gone')) ok('顺手丢掉了目录里已经没有的旧结论');
+  else bad('旧结论没丢', JSON.stringify([...p4.unavailable]));
+
+  // ⑤ force 仍然必须是"整批重探"（手动点「重探一遍」就该全查）
+  const file5 = path.join(tmp, 'p4b5.json');
+  seed(file5, ['m-bad-1']);
+  const { fetchImpl: f5, calls: c5 } = makeFetch(['m-good-1', 'm-good-2']);
+  const p5 = new ModelProbe({ dataFile: file5, config: {}, pool: makePool(['cred-a']), registry: makeRegistry(MODELS), log: silent, fetchImpl: f5 });
+  const r5 = await p5.probe({ force: true });
+  if (c5.length === MODELS.length && r5.partial !== true) ok('force 还是整批探（手动重探不受这套优化影响）', `${c5.length} 次`);
+  else bad('force 被优化成了部分探', JSON.stringify({ calls: c5.length, partial: r5.partial }));
 }
 
 /* ================================================================ 5. 自愈 */
