@@ -910,7 +910,7 @@ function renderOverview() {
   $("#ovRecent").innerHTML = recent.length ? tbl(
     ["时间", "模型", "结果", "耗时", "tokens"],
     recent.map((r) => [
-      '<span class="dim">' + esc(r.ts.slice(11, 19)) + "</span>",
+      '<span class="dim">' + esc(hhmmss(r.ts)) + "</span>",
       "<code>" + esc(r.model) + "</code>",
       r.ok ? '<span class="tag ok">OK</span>' : '<span class="tag err">FAIL</span>',
       '<span class="num">' + ms(r.latencyMs) + "</span>",
@@ -1460,6 +1460,18 @@ function renderCalls() {
 // 改成「>= 选中档位」之后，默认 INFO 既能看见报错、又不用看轮询细节。
 const LOG_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
 
+// 时间一律按**本机时区**显示。
+//
+// 以前是直接切 ISO 的第 11~19 位，而 logger 写的是 UTC，于是面板上比本机时间慢
+// 8 小时（实测：本机 13:44 的日志显示成 05:44），对时间时特别容易看错行。
+// 这里按浏览器时区换算 —— 同一份日志，换台机器看也是那台机器的本地时间。
+function hhmmss(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(iso || "").slice(11, 19);
+  const p = (n) => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+
 function renderLogs() {
   if (!logAuto && renderLogs._done) return;
   const q = ($("#logFilter").value || "").toLowerCase();
@@ -1468,7 +1480,7 @@ function renderLogs() {
   if (q) list = list.filter((l) => (l.msg + " " + l.scope + " " + JSON.stringify(l.extra || {})).toLowerCase().includes(q));
   const box = $("#logBox");
   const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-  box.textContent = list.map((l) => "[" + l.ts.slice(11, 19) + "] " + l.level.toUpperCase().padEnd(5) + " " + String(l.scope).padEnd(9) + " " + l.msg + (l.extra ? " " + JSON.stringify(l.extra) : "")).join("\n") || "（无日志）";
+  box.textContent = list.map((l) => "[" + hhmmss(l.ts) + "] " + l.level.toUpperCase().padEnd(5) + " " + String(l.scope).padEnd(9) + " " + l.msg + (l.extra ? " " + JSON.stringify(l.extra) : "")).join("\n") || "（无日志）";
   if (atBottom) box.scrollTop = box.scrollHeight;
   renderLogs._done = true;
 }
@@ -1858,7 +1870,6 @@ function renderClaim() {
   const rows = active.map((i) => {
     const hist = (i.claimDays || []).slice(0, 5);
     const recent = hist.map((h) => h.day.slice(5) + " +" + fmtP(h.gained)).join("  ");
-    const todayItem = (i.claimDays || []).find((h) => h.day === h.day && h.gained > 0 && h.day === new Date().toISOString().slice(0, 10));
     return [
       '<div>' + esc(i.label || i.userName) + '</div>',
       i.claimedToday

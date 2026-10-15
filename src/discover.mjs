@@ -25,6 +25,17 @@ import { listDirs, readJson, safeJson, home, trimSlash, maskSecret } from './uti
 
 const log = createLogger('discover');
 
+/**
+ * `discover done` 这条 DEBUG 以前每轮无条件打，还带着三个 URL 编码的目录名
+ * （`01a1239…%3A01a1239…`）—— 实测 34 分钟里同一条刷了 53 次，占全部日志的 23%。
+ *
+ * 现在按「扫到的文件集合有没有变」说话：变了（新装了一个 OfficeAce / 换了账号目录）
+ * 才打，并附带文件名；没变只留 5 分钟一条的心跳，且只报个数。
+ */
+const DISCOVER_HEARTBEAT_MS = 5 * 60 * 1000;
+let lastScanFileSig = null;
+let lastScanFileBeatAt = 0;
+
 const PLACEHOLDER_KEYS = new Set([
   '',
   'huawei-maas-session',
@@ -220,11 +231,24 @@ export function discover({ installDirs = [] } = {}) {
     ),
   }));
 
-  log.debug('discover done', {
-    files: [...scannedFiles].map((f) => path.basename(path.dirname(f))),
-    credentials: credentials.length,
-    catalog: catalog.length,
-  });
+  const scanned = [...scannedFiles].map((f) => path.basename(path.dirname(f)));
+  const fileSig = scanned.slice().sort().join(',');
+  if (fileSig !== lastScanFileSig) {
+    lastScanFileSig = fileSig;
+    lastScanFileBeatAt = Date.now();
+    log.debug('discover done', {
+      files: scanned,
+      credentials: credentials.length,
+      catalog: catalog.length,
+    });
+  } else if (Date.now() - lastScanFileBeatAt >= DISCOVER_HEARTBEAT_MS) {
+    lastScanFileBeatAt = Date.now();
+    log.debug('discover done（无变化）', {
+      files: scanned.length,
+      credentials: credentials.length,
+      catalog: catalog.length,
+    });
+  }
 
   return { credentials, catalog };
 }

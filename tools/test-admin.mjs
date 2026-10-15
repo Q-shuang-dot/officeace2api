@@ -1659,6 +1659,93 @@ console.log('\n[刷新与统计]');
     }
   }
 
+  /* -------------------------------------------------- 日志时间用本机时区 */
+  // 以前面板和 logs/server.log 都是切 ISO 的第 11~19 位，而 logger 写的是 UTC，
+  // 于是时间比本机慢 8 小时（实测：本机 13:44 显示成 05:44）—— 看日志的人得先
+  // 心算一次才知道那行是几点发生的事。这一节钉住两件事：换算用本机时区，
+  // 以及所有「给人看」的显示路径上都不许再出现 ts.slice(11, 19)。
+  {
+    const fs = await import('node:fs');
+    const { localClock, localZone } = await import('../src/logger.mjs');
+
+    const at = new Date(2026, 0, 2, 13, 4, 5); // 本机 13 点 4 分 5 秒
+    if (localClock(at) === '13:04:05') ok('日志时间：localClock 按本机时区算（不是 UTC）');
+    else bad('日志时间：localClock 算的不是本机时区', localClock(at));
+
+    const off = -at.getTimezoneOffset();
+    const want = `UTC${off >= 0 ? '+' : '-'}`
+      + `${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}:${String(Math.abs(off) % 60).padStart(2, '0')}`;
+    if (localZone(at) === want) ok('日志时间：localZone 与本机时区一致', localZone(at));
+    else bad('日志时间：localZone 不对', `${localZone(at)} != ${want}`);
+
+    const loggerSrc = fs.readFileSync(new URL('../src/logger.mjs', import.meta.url), 'utf8');
+    if (!loggerSrc.includes('slice(11, 19)')) ok('日志时间：logger 写文件/控制台那行不再切 UTC');
+    else bad('日志时间：logger 里还留着 ts.slice(11, 19)', '落盘的还是 UTC');
+
+    const html = fs.readFileSync(new URL('../src/admin.html', import.meta.url), 'utf8');
+    if (html.includes('function hhmmss(') && !/\bts\.slice\(11, 19\)/.test(html)) {
+      ok('日志时间：面板改走 hhmmss() —— 日志行和最近调用表都按本机时区');
+    } else {
+      bad('日志时间：面板还在切 UTC',
+        /\bts\.slice\(11, 19\)/.test(html) ? '仍有 ts.slice(11, 19)' : '没找到 hhmmss');
+    }
+  }
+
+  /* -------------------------------------------------- 周期发现的日志 */
+  // 和号池扫描同一个毛病，只是发生在「凭据发现」这条链上：45 秒一轮，三条日志
+  // （discover 的 DEBUG、忽略名单拦下、凭据发现完成）**一字不差**地重复。
+  // 实测 34 分钟 228 条里有 145 条是它们（63%），真正的事件全被埋在里面。
+  // 规矩：变了才说话；没变化退到 DEBUG，且最多 5 分钟一条心跳。
+  {
+    const fs = await import('node:fs');
+    const { getRecentLogs, clearRecentLogs } = await import('../src/logger.mjs');
+    const { discover } = await import('../src/discover.mjs');
+    const done = () => getRecentLogs().filter((l) => l.msg.startsWith('discover done'));
+
+    clearRecentLogs();
+    discover({ installDirs: [] });
+    const first = done();
+    if (first.length === 1 && Array.isArray(first[0].extra?.files)) {
+      ok('发现日志：首扫（没有基线）打一条，并带上扫到的文件');
+    } else {
+      bad('发现日志：首扫没打或没带文件列表', JSON.stringify(first.map((l) => l.extra)));
+    }
+
+    clearRecentLogs();
+    discover({ installDirs: [] });
+    discover({ installDirs: [] });
+    const repeat = done();
+    if (repeat.length === 0) ok('发现日志：文件集合没变 → 一条都不打（原来每 45 秒一条）');
+    else bad('发现日志：没变化还在打', `${repeat.length} 条`);
+
+    const idx = fs.readFileSync(new URL('../src/index.mjs', import.meta.url), 'utf8');
+    if (idx.includes('凭据发现完成（无变化）') && idx.includes('DISCOVERY_HEARTBEAT_MS')) {
+      ok('发现日志：boot 的「凭据发现完成」有 5 分钟心跳兜底');
+    } else {
+      bad('发现日志：boot 那边没有心跳', '找不到「凭据发现完成（无变化）」');
+    }
+    if (idx.includes('lastIgnoredSig')) {
+      ok('发现日志：「忽略名单拦下」按指纹变化才打（稳态不再重复）');
+    } else {
+      bad('发现日志：「忽略名单拦下」还是无条件打', '找不到 lastIgnoredSig');
+    }
+
+    // ⚠️ 这条是给签名拼接兜底的。曾经写的是 `droppedKeys.map(c => c.key).join(',')`，
+    // 而 discover() 返回的凭据上**没有 `key`**（那是进连接池时才算的），
+    // `[undefined].join(',')` 在 JS 里是**空串** → 签名恒等于初始值 '' → 第一句永远
+    // 打不出来：启动日志里那条「忽略名单拦下」直接消失，看着像保护没生效。
+    // 所以签名必须带条数前缀：拿不到任何标识时也不能等于空串。
+    const { ignoredSignature } = await import('../src/discoverFilter.mjs');
+    const emptyish = ignoredSignature([{}]);
+    const a = ignoredSignature([{ userId: 'a' }]);
+    const b = ignoredSignature([{ userId: 'b' }]);
+    if (emptyish !== '' && a !== b && ignoredSignature([]) === '0|') {
+      ok('发现日志：签名带条数前缀 —— 拿不到标识时也不等于空串（防「第一句打不出来」）');
+    } else {
+      bad('发现日志：签名可能被拼成空串', JSON.stringify([ignoredSignature([]), emptyish, a, b]));
+    }
+  }
+
   /* -------------------------------------------------- 模型倍率匹配 */
   // 面板上的「使用倍率」列。规则藏在 admin.html 的 `rateFor()` 里，
   // 抠出来跑一遍真实边界：错了不会报错，只会显示一个**看起来合理但是错的**倍率

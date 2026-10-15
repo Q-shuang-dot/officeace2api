@@ -62,3 +62,22 @@ export function isIgnoredCredential(cred, ignoredIds) {
 export function pickIgnoredCredentials(creds = [], ignoredIds) {
   return (creds || []).filter((c) => isIgnoredCredential(c, ignoredIds));
 }
+
+/**
+ * 被忽略名单拦下的那批凭据的「签名」—— 变了才值得说一句。
+ *
+ * ⚠️ 签名**必须带条数前缀**。凭据对象上没有稳定主键：`discover()` 返回的是
+ * `id / userId / baseUrl / headers / ...`，`key` 是进连接池时才算出来的（池外
+ * 的那份对象根本没有这个字段）。所以只拼标识的话，「拦下 1 条、且标识取不到」
+ * 会拼出一个**空串** —— 而空串正好等于「还没说过话」的初始状态，于是第一句
+ * 永远打不出来。真踩过：启动时那条「忽略名单拦下已删除账号的凭据」直接消失，
+ * 看着像保护没生效（实际拦下了，只是没说）。
+ *
+ * 带上条数前缀之后，空标识也拼不出空串。
+ */
+export function ignoredSignature(creds = []) {
+  const ids = (creds || [])
+    .map((c) => c?.userId || c?.accountId || c?.id || String(c?.baseUrl || ''))
+    .sort();
+  return `${ids.length}|${ids.join(',')}`;
+}

@@ -10,14 +10,14 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadConfig, saveConfig, ensureAdminToken } from './config.mjs';
-import { configureLogger, createLogger } from './logger.mjs';
+import { configureLogger, createLogger, localZone } from './logger.mjs';
 import { discover } from './discover.mjs';
 import { CredentialPool } from './pool.mjs';
 import { ModelRegistry } from './models.mjs';
 import { UsageStore } from './stats.mjs';
 import { createApp } from './server.mjs';
 import { fingerprintOf } from './fingerprint.mjs';
-import { buildIgnoredIdSet, isIgnoredCredential } from './discoverFilter.mjs';
+import { buildIgnoredIdSet, isIgnoredCredential, ignoredSignature } from './discoverFilter.mjs';
 import { AccountStore } from './accounts.mjs';
 import { AuthFlow } from './authflow.mjs';
 import { LoginFlow } from './oauth.mjs';
@@ -99,6 +99,10 @@ if (config.__unknownKeys?.length) {
     keys: config.__unknownKeys,
   });
 }
+
+// 日志时间一律按本机时区显示。先把「哪个区」说清楚 —— 以前是 UTC，面板上比
+// 本机时间慢 8 小时，看日志的人得先做一次心算才知道那是几点发生的事。
+log.info('日志时间使用本机时区', { zone: localZone(), file: LOG_FILE });
 
 const usageFile = path.join(ROOT, 'data', 'usage.json');
 const usage = new UsageStore({ file: usageFile });
@@ -236,6 +240,48 @@ function poolCredentialsFromAccounts() {
 }
 
 let lastDiscoveryAt = 0;
+// 上一次「忽略名单拦下」的那批凭据指纹（见 runDiscovery 里那段说明）
+let lastIgnoredSig = '';
+
+/**
+ * 「凭据发现完成」的日志：和号池扫描一个规矩 —— **只看变化**。
+ *
+ * 这行原来是每 45 秒无条件 INFO。实测 34 分钟 228 条日志里有 46 条是它，内容一字
+ * 不差（`credentials:2 / accounts:2 / added:0 / catalog:47`）；加上同样重复的
+ * 「忽略名单拦下…」46 条、`discover done` 的 DEBUG 53 条，**一共占了 63%**，
+ * 真正的事件（新号授权进来、注册完成、上游目录变了）全被埋在里头。
+ *
+ *   reason 不是 interval（说明刚发生了某件事）→ 一律 INFO
+ *   interval 且数字变了（有基线）            → INFO，并带上变化前的数字
+ *   interval 且一字没变                      → DEBUG 心跳，最多 5 分钟一条
+ *
+ * 心跳不能省：没有它就看不出「发现这条链还活着没有」。
+ */
+const DISCOVERY_HEARTBEAT_MS = 5 * 60 * 1000;
+let lastDiscoverySummary = null;
+let lastDiscoveryBeatAt = 0;
+
+function logDiscoveryResult(summary) {
+  const before = lastDiscoverySummary;
+  const same = before
+    && before.credentials === summary.credentials
+    && before.accounts === summary.accounts
+    && before.catalog === summary.catalog
+    && before.added === summary.added;
+  lastDiscoverySummary = summary;
+  if (!(summary.reason === 'interval' && same)) {
+    log.info('凭据发现完成', before ? { ...summary, was: before } : summary);
+    lastDiscoveryBeatAt = Date.now();
+    return;
+  }
+  if (Date.now() - lastDiscoveryBeatAt >= DISCOVERY_HEARTBEAT_MS) {
+    lastDiscoveryBeatAt = Date.now();
+    log.debug('凭据发现完成（无变化）', {
+      credentials: summary.credentials,
+      accounts: summary.accounts,
+    });
+  }
+}
 
 function runDiscovery(reason = 'startup') {
   // 先扫号池，号池是凭据的第一来源（带启用开关和账号归属）
@@ -289,15 +335,28 @@ function runDiscovery(reason = 'startup') {
   const ignoredIds = useAccounts
     ? buildIgnoredIdSet([...(accountStore.meta?.ignored || [])].map((id) => norm(id)))
     : new Set();
-  let droppedIgnored = 0;
+  const droppedKeys = [];
   const effectiveLegacy = ignoredIds.size
     ? legacy.filter((c) => {
       if (!isIgnoredCredential(c, ignoredIds)) return true;
-      droppedIgnored += 1;
+      droppedKeys.push(c);
       return false;
     })
     : legacy;
-  if (droppedIgnored > 0) {
+  const droppedIgnored = droppedKeys.length;
+  // 「忽略名单拦下已删除账号的凭据」是**稳态**，不是事件：只要你删过一个号，它那份
+  // models.json 还留在盘上，于是每一轮（45 秒）都会拦下同一条 —— 实测 34 分钟里这句
+  // 重复了 46 次。所以按「拦下的那批凭据有没有变」说话：变了（又删了一个号 / 恢复了
+  // 一个号）才 INFO，没变就闭嘴。
+  //
+  // ⚠️ 签名拼接一定要走 ignoredSignature()（它带条数前缀）。当初在这里写
+  // `droppedKeys.map(c => c.key).join(',')` 踩了个坑：discover() 返回的凭据上**没有
+  // `key`**（那是进池时才算的），`[undefined].join(',')` 在 JS 里是空串，签名于是
+  // 恒等于初始的 ''，**第一条永远打不出来** —— 启动日志里这条直接消失，看着像保护
+  // 没生效（实际拦下了）。
+  const ignoredSig = ignoredSignature(droppedKeys);
+  if (droppedIgnored > 0 && ignoredSig !== lastIgnoredSig) {
+    lastIgnoredSig = ignoredSig;
     log.info('忽略名单拦下已删除账号的凭据', { count: droppedIgnored, reason });
   }
 
@@ -333,7 +392,7 @@ function runDiscovery(reason = 'startup') {
   pool.retain(validKeys, { allowEmpty: useAccounts });
 
   lastDiscoveryAt = Date.now();
-  log.info('凭据发现完成', {
+  logDiscoveryResult({
     reason,
     credentials: pool.size,
     accounts: accountStore.size(),
