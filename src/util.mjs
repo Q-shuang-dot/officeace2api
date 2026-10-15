@@ -98,15 +98,6 @@ export function readJson(file) {
   }
 }
 
-export function exists(p) {
-  try {
-    fs.statSync(p);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function listDirs(parent) {
   try {
     return fs
@@ -122,20 +113,6 @@ export function home() {
   return process.env.OFFICEACE_HOME || os.homedir();
 }
 
-export function homeJoin(...parts) {
-  return path.join(home(), ...parts);
-}
-
-export function decodeJwt(token) {
-  const parts = String(token || '').split('.');
-  if (parts.length < 2) return null;
-  try {
-    return safeJson(Buffer.from(parts[1].replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
-  } catch {
-    return null;
-  }
-}
-
 export function shortId(id, len = 10) {
   const s = String(id || '');
   return s.length > len ? `${s.slice(0, len)}…` : s;
@@ -145,10 +122,6 @@ export function maskSecret(secret) {
   const s = String(secret || '');
   if (s.length <= 12) return '***';
   return `${s.slice(0, 8)}…${s.slice(-4)}`;
-}
-
-export function nowIso() {
-  return new Date().toISOString();
 }
 
 export function randId(prefix = 'chatcmpl') {

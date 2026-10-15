@@ -26,6 +26,28 @@ const MAX_URL_LENGTH = 8 * 1024;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 面板口令的 Cookie 名（见下面管理路由那段） */
+const ADMIN_COOKIE = 'o2a_admin';
+
+/**
+ * 从 `Cookie:` 头里取一个键。只为这一件事写十几行，不引依赖。
+ * 取不到返回 ''，解不出百分号编码就按原样返回 —— 口令本身的比对在调用方。
+ */
+function cookieValue(header, name) {
+  for (const part of String(header || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    if (part.slice(0, i).trim() !== name) continue;
+    const raw = part.slice(i + 1).trim();
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+  return '';
+}
+
 function sendJson(res, status, payload) {
   if (res.writableEnded || res.headersSent) {
     if (!res.writableEnded) res.end();
@@ -1007,25 +1029,43 @@ export function createApp(ctx) {
     try {
       // —— 管理面板 ——
       //
-      // 口令从**两个地方**认：`x-admin-token` 头（面板 JS 里每条 XHR 都带），
-      // 以及 URL 上的 `?token=`（人第一次打开面板时只能这么传）。
+      // 口令从**三个地方**认：`x-admin-token` 头（面板 JS 里每条 XHR 都带）、
+      // URL 上的 `?token=`（人第一次打开面板时只能这么传）、以及 Cookie。
       //
       // 只认头是个真踩到的坑：启动横幅和下面那条 401 的提示都写着
       // 「/admin?token=你的口令」，可服务端当时只比对请求头 ——
       // 于是**按提示走的人反而进不去**，浏览器地址栏里带着 token 也是 401。
       // 提示文案和实际行为不一致，比没有提示更坑。
+      //
+      // Cookie 是后加的：`?token=` 会留在浏览器历史里、也会出现在截图里。
+      // 所以第一次用 `?token=` 进来时顺手种一个 HttpOnly 的 Cookie，
+      // 之后直接开 /admin/ 就能进；地址栏那一份由面板自己用 replaceState 抹掉
+      // （见 admin.html 里的 `history.replaceState`）。
       const isAdminRoute = pathname === '/' || pathname === '/admin' || pathname.startsWith('/admin/');
       if (isAdminRoute && config.admin?.token) {
         const fromQuery = query.get('token') || '';
         const fromHeader = String(req.headers['x-admin-token'] || '');
-        if (fromQuery !== config.admin.token && fromHeader !== config.admin.token) {
+        const fromCookie = cookieValue(req.headers.cookie, ADMIN_COOKIE);
+        const pass =
+          fromQuery === config.admin.token ||
+          fromHeader === config.admin.token ||
+          fromCookie === config.admin.token;
+        if (!pass) {
           sendJson(res, 401, {
             error: {
-              message: '管理员 token 无效。请在面板地址后加 ?token=你的口令',
+              message: '管理员 token 无效。请在面板地址后加 ?token=你的口令（成功进一次之后浏览器会记住）',
               type: 'authentication_error',
             },
           });
           return;
+        }
+        // 用 URL 口令进来的这一次，把它换成 Cookie。HttpOnly 是故意的：
+        // 面板 JS 读不到，也就不可能被脚本顺手发到别处去。
+        if (fromQuery === config.admin.token && fromCookie !== config.admin.token) {
+          res.setHeader(
+            'Set-Cookie',
+            `${ADMIN_COOKIE}=${encodeURIComponent(config.admin.token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=2592000`,
+          );
         }
       }
 

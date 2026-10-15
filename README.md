@@ -279,7 +279,8 @@ officeace2api/
 ├── tools/                                 排障脚本、回归测试、看门狗
 ├── docs/                                  控制台截图 + 技术笔记
 ├── data/                                  运行期数据（不进仓库）
-└── logs/                                  日志（不进仓库）
+│   └── register-tasks.json                注册队列落盘（重启不丢任务）
+└── logs/                                  日志（不进仓库，滚动留 3 份）
 ```
 
 ---
@@ -289,8 +290,14 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
-- `node tools/test-admin.mjs` —— 控制台接口自测（261 项，含配置卫生：死配置检测、
-  日志时间用本机时区、周期发现只在变化时说话）
+- `node tools/test-admin.mjs` —— 控制台接口自测（269 项，含配置卫生：死配置检测、
+  日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie）
+- `node tools/test-dpapi.mjs` —— DPAPI 解密链（13 项，起子进程真解密：真 blob 往返 /
+  缓存 / 连续失败进冷却）
+- `node tools/test-register.mjs` —— 批量注册状态机（36 项，不碰网络：去重 / 暂停不跑 /
+  `view()` 脱敏 / 落盘与恢复）
+- `node tools/test-logger.mjs` —— 日志落盘与滚动（9 项：留 3 代历史 / 本机时间列 vs
+  UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
 - `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（41 项）
 - `node tools/test-authflow-poll.mjs` —— 一键授权的轮询节奏测试（27 项，把 `node:https` 换成假的**数请求次数**：

@@ -20,8 +20,18 @@
 
 import { createLogger } from './logger.mjs';
 import { request } from './http.mjs';
+import { readJson, writeFileSecure } from './util.mjs';
 
 const log = createLogger('register');
+
+/** 终态任务最多留这么多条（在途任务永远留着），见 trimHistory() */
+const HISTORY_LIMIT = 60;
+
+/** 读盘时把值收敛成数字：**合法的 0 要留着**，只有缺失/不是数才用默认值 */
+function num(v, dflt = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : dflt;
+}
 
 export const DEFAULT_REGISTER_URL = 'https://reg.huaweicloud.com/registerui/register.html';
 
@@ -52,18 +62,160 @@ export class RegisterQueue {
    * @param {{getConfig:()=>object,
    *          authFlow: import('./authflow.mjs').AuthFlow,
    *          accounts: import('./accounts.mjs').AccountStore,
+   *          dataFile?: string,
    *          onDone?:(task:object)=>void}} opts
    */
-  constructor({ getConfig, authFlow, accounts, onDone } = {}) {
+  constructor({ getConfig, authFlow, accounts, onDone, dataFile } = {}) {
     this.getConfig = getConfig || (() => ({}));
     this.authFlow = authFlow;
     this.accounts = accounts;
     this.onDone = onDone || (() => {});
+    this.dataFile = dataFile || ''; // 空 = 纯内存（自测里大量这么用）
     this.tasks = new Map();
     this.order = [];
     this.seq = 0;
     this.running = false;
     this.paused = false;
+    this.load();
+  }
+
+  /* ------------------------------------------------- 落盘与恢复（重启不丢任务） */
+
+  /**
+   * 从 `data/register-tasks.json` 把任务读回来。
+   *
+   * ⚠️ 在途任务（还没走到 done/failed 的）**一律标成中断**，不假装还在跑。
+   * 原因：这条链的后半段靠的是**本进程内的活状态** —— `authTaskId` 指向 AuthFlow
+   * 内存里的那条授权任务、`submittedAt` 是在等刚才那次提交、短信码本身分钟级有效。
+   * 进程一重启这些全都失效了，接着跑只会卡在 `awaiting_auth` 上反复问一条不存在
+   * 的授权任务。所以恢复时如实写成「失败 + 中断在哪一步」，人看得到，也能点重试重来。
+   *
+   * 不落盘的两样（都只为了少存一份没用的敏感数据）：
+   *   · `password` —— 全仓库没有任何地方读它（注册是人在浏览器里做的），存了纯白担风险
+   *   · `smsCode`  —— 分钟级有效、重启后也用不上
+   *
+   * 文件里手机号是明文（否则重启后没法接着注册），所以走 writeFileSecure：
+   * 原子写 + icacls 只留当前用户，和 data/accounts.json 一个待遇。
+   */
+  load() {
+    if (!this.dataFile) return 0;
+    const doc = readJson(this.dataFile);
+    if (!doc || !Array.isArray(doc.tasks)) return 0;
+    let restored = 0;
+    let interrupted = 0;
+    for (const raw of doc.tasks) {
+      if (!raw || typeof raw !== 'object') continue;
+      const id = String(raw.id || '');
+      const phone = String(raw.phone || '');
+      if (!id || !phone) continue;
+      const task = {
+        id,
+        phone,
+        label: String(raw.label || ''),
+        promotionCode: String(raw.promotionCode || ''),
+        status: String(raw.status || 'pending'),
+        // ⚠️ 这里不能用 `Number(x) || Date.now()`：合法的 0 会被当成「缺失」。
+        // 这个坑真的踩到了 —— 历史裁剪按 `finishedAt || updatedAt || createdAt` 排序，
+        // 时间戳 0 被替换成「现在」之后，最老的那条任务反而排到了最前面、躲过了裁剪。
+        createdAt: num(raw.createdAt, Date.now()),
+        updatedAt: num(raw.updatedAt, Date.now()),
+        submittedAt: num(raw.submittedAt),
+        finishedAt: num(raw.finishedAt),
+        attempts: num(raw.attempts),
+        smsCode: '',
+        authTaskId: String(raw.authTaskId || ''),
+        accountId: String(raw.accountId || ''),
+        error: String(raw.error || ''),
+        events: Array.isArray(raw.events) ? raw.events.slice(-30) : [],
+        registerUrl: String(raw.registerUrl || ''),
+        activation: raw.activation || null,
+      };
+      if (!['done', 'failed', 'skipped'].includes(task.status)) {
+        const was = TASK_STATES[task.status] || task.status;
+        task.status = 'failed';
+        task.finishedAt = Date.now();
+        task.error = `服务重启，流程中断在「${was}」（可点「重试」重来）`;
+        this._event(task, task.error);
+        interrupted += 1;
+      }
+      this.tasks.set(task.id, task);
+      this.order.push(task.id);
+      restored += 1;
+    }
+    this.seq = Math.max(Number(doc.seq) || 0, 0);
+    this.trimHistory();
+    if (restored) {
+      log.info('读回注册任务', { restored, interrupted });
+    }
+    return restored;
+  }
+
+  /**
+   * 落盘。`dataFile` 为空时是纯内存模式，直接返回 false（自测大量走这条路）。
+   * 写失败只 warn 不抛：任务队列是「顺带记一笔」，不该因为它写不进去就打断注册流程。
+   */
+  save() {
+    if (!this.dataFile) return false;
+    this.trimHistory();
+    const doc = {
+      seq: this.seq,
+      savedAt: new Date().toISOString(),
+      tasks: this.order
+        .map((id) => this.tasks.get(id))
+        .filter(Boolean)
+        .map((t) => ({
+          id: t.id,
+          phone: t.phone,
+          label: t.label,
+          promotionCode: t.promotionCode,
+          status: t.status,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          submittedAt: t.submittedAt || 0,
+          finishedAt: t.finishedAt || 0,
+          attempts: t.attempts,
+          authTaskId: t.authTaskId,
+          accountId: t.accountId,
+          error: t.error,
+          events: t.events.slice(-10),
+          registerUrl: t.registerUrl || '',
+          activation: t.activation || null,
+        })),
+    };
+    try {
+      writeFileSecure(this.dataFile, JSON.stringify(doc, null, 2));
+      return true;
+    } catch (err) {
+      log.warn('注册任务落盘失败', { error: String(err.message || err) });
+      return false;
+    }
+  }
+
+  /**
+   * 历史裁剪：在途任务永远留着，终态任务只留最近 HISTORY_LIMIT 条。
+   * 不然「注册一批、清一批」跑上几个月，这个文件会慢慢长成一本流水账。
+   */
+  trimHistory() {
+    const keep = new Set();
+    const terminal = [];
+    for (const id of this.order) {
+      const t = this.tasks.get(id);
+      if (!t) continue;
+      if (['done', 'failed', 'skipped'].includes(t.status)) terminal.push(id);
+      else keep.add(id);
+    }
+    const when = (id) => {
+      const t = this.tasks.get(id);
+      return t.finishedAt || t.updatedAt || t.createdAt || 0;
+    };
+    terminal.sort((a, b) => when(b) - when(a));
+    for (const id of terminal.slice(0, HISTORY_LIMIT)) keep.add(id);
+    const dropped = this.order.filter((id) => !keep.has(id));
+    if (dropped.length) {
+      for (const id of dropped) this.tasks.delete(id);
+      this.order = this.order.filter((id) => keep.has(id));
+    }
+    return dropped.length;
   }
 
   cfg() {
@@ -124,6 +276,7 @@ export class RegisterQueue {
     }
 
     log.info('注册任务入队', { created: created.length, total: this.tasks.size });
+    this.save();
     if (input.autoStart !== false && created.length) this.kick();
     return created.map((t) => this.view(t));
   }
@@ -258,6 +411,9 @@ export class RegisterQueue {
       }
       task.updatedAt = Date.now();
       return this.view(task);
+    } finally {
+      // 每次推进都落一次盘：一步状态机跨几秒到几分钟，重启丢一步就得从头来
+      this.save();
     }
   }
 
@@ -288,6 +444,7 @@ export class RegisterQueue {
     task.smsCode = String(code || '').trim();
     this._event(task, `已录入短信验证码（${maskCode(task.smsCode)}）`);
     task.updatedAt = Date.now();
+    this.save();
     return this.view(task);
   }
 
@@ -382,13 +539,30 @@ export class RegisterQueue {
     return t ? this.view(t) : null;
   }
 
+  /**
+   * 删掉一条任务。
+   *
+   * 原来的规则是「只能删已完成或失败」，本意是护住在途任务。但它把另一种情况也堵死了：
+   * **一条卡在「等待短信验证码」上的任务**（人不打算继续了、或者号填错了）在面板上
+   * 删不掉 —— 面板每行都给「删除」按钮，点下去只报错；唯一的出路竟然是重启服务
+   * （重启才会把它变成「失败」）。自测踩的是同一个坑：它跑完会删自己造的号，
+   * 但删除一直失败、返回值又没人看，于是**每跑一次就在真队列里留两条垃圾**
+   * （以前重启能冲掉，落了盘之后就永久留着了）。
+   *
+   * 删在途任务本身是安全的：`step()` 是拿着快照推进的，`save()` 只按 `this.order`
+   * 写盘 —— 被删掉的任务不在 order 里，最多是它最后那一步的改动没人再看见。
+   * 但删在途任务值得留一条日志：那是「人主动放弃」，不是流程自己走完的。
+   */
   remove(id) {
     const key = String(id || '');
     const t = this.tasks.get(key);
     if (!t) return false;
-    if (!['done', 'failed'].includes(t.status)) throw new Error('只能删除已完成或失败的任务');
+    const was = TASK_STATES[t.status] || t.status;
+    const inFlight = !['done', 'failed', 'skipped'].includes(t.status);
     this.tasks.delete(key);
     this.order = this.order.filter((x) => x !== key);
+    this.save();
+    if (inFlight) log.info('删掉一条还没跑完的注册任务', { phone: maskPhone(t.phone), at: was });
     return true;
   }
 
@@ -401,6 +575,7 @@ export class RegisterQueue {
       }
     }
     this.order = this.order.filter((id) => this.tasks.has(id));
+    this.save();
     return n;
   }
 
@@ -418,6 +593,7 @@ export class RegisterQueue {
     t.authTaskId = '';
     t.updatedAt = Date.now();
     this._event(t, '手动重试');
+    this.save();
     return this.view(t);
   }
 

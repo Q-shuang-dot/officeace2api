@@ -363,12 +363,26 @@ console.log('\n[刷新与统计]');
   });
   if (r.status === 200 && r.json?.created?.length === 2) ok('POST /admin/api/register/enqueue', `入队 ${r.json.created.length} 个`);
   else bad('POST /admin/api/register/enqueue', `HTTP ${r.status} created=${r.json?.created?.length}`);
+  const madeIds = [];
   for (const t of r.json?.created || []) {
     const id = t.id;
+    madeIds.push(id);
     const s = await call('/admin/api/register/sms', { method: 'POST', body: { id, code: '123456' } });
     if (s.status === 200 && s.json?.task?.smsCodeSet) ok('POST /admin/api/register/sms', '验证码已脱敏录入');
     else bad('POST /admin/api/register/sms', `HTTP ${s.status}`);
-    await call('/admin/api/register/remove', { method: 'POST', body: { id } });
+    // 这个返回值以前没人看，于是「删不掉」被静默吞了：任务留在真队列里，
+    // 落了盘之后还会永久留着。现在删除必须真的成功。
+    const rm = await call('/admin/api/register/remove', { method: 'POST', body: { id } });
+    if (rm.status === 200 && rm.json?.ok === true) ok('POST /admin/api/register/remove', '在途任务也能直接删');
+    else bad('POST /admin/api/register/remove', `HTTP ${rm.status} ok=${rm.json?.ok} ${rm.json?.error?.message || ''}`);
+  }
+  const left = await call('/admin/api/register');
+  const leftIds = new Set((left.json?.tasks || []).map((x) => x.id));
+  const junk = madeIds.filter((id) => leftIds.has(id));
+  if (madeIds.length === 2 && junk.length === 0) {
+    ok('自检造的任务自己收拾干净（不再往真队列和落盘文件里留垃圾）');
+  } else {
+    bad('自检留下了垃圾任务', JSON.stringify(junk));
   }
 }
 
@@ -1746,6 +1760,28 @@ console.log('\n[刷新与统计]');
     }
   }
 
+  /* -------------------------------------------------- 面板轮询的省电档 */
+  // 面板经常被丢在后台标签页挂一整天，而每次 poll 服务端都要现拼约 41KB（实测 3~7ms）、
+  // 客户端整块重建 DOM。**同一个事件循环**在给模型请求做流式转发，所以这活儿
+  // 每 3 秒来一次纯属白烧。规矩：后台不轮询，回前台立刻补。
+  {
+    const { readFileSync: rfPanel } = await import('node:fs');
+    const html = rfPanel(new URL('../src/admin.html', import.meta.url), 'utf8');
+    const hasVis = html.includes('visibilitychange');
+    const hasHidden = html.includes('document.hidden');
+    const hasStart = html.includes('const startPoll =');
+    const hasStop = html.includes('const stopPoll =');
+    // 回前台必须**立刻**补一次，否则用户切回来看到的是停轮询之前的旧数据
+    const refreshOnShow = /visibilitychange[\s\S]{0,200}?startPoll\(\);\s*poll\(\);/.test(html);
+    // 无条件 setInterval 的老写法不能再出现（`startPoll()` 里那个不算：它带守卫）
+    const unbounded = /^setInterval\(poll, 3000\);$/m.test(html);
+    if (hasVis && hasHidden && hasStart && hasStop && refreshOnShow && !unbounded) {
+      ok('面板轮询：后台停轮询 / 回前台立刻补一次（后台标签页不再每 3 秒拼 66KB）');
+    } else {
+      bad('面板轮询：后台停轮询或回前台补一次没生效', JSON.stringify({ hasVis, hasHidden, hasStart, hasStop, refreshOnShow, unbounded }));
+    }
+  }
+
   /* -------------------------------------------------- 模型倍率匹配 */
   // 面板上的「使用倍率」列。规则藏在 admin.html 的 `rateFor()` 里，
   // 抠出来跑一遍真实边界：错了不会报错，只会显示一个**看起来合理但是错的**倍率
@@ -2165,6 +2201,35 @@ console.log('\n[面板鉴权]');
     const viaBadQuery = await fetch(`${base}/admin?token=definitely-wrong`);
     if (viaBadQuery.status === 401) ok('URL 上写错口令照样拦（401）');
     else bad('URL 上写错口令竟然放行了', `HTTP ${viaBadQuery.status}`);
+
+    /*
+     * 口令走 URL 会留在浏览器历史里，也会出现在截图里 —— 所以第一次用 `?token=`
+     * 进来时服务端顺手换成一个 HttpOnly Cookie，面板再把地址栏那一份抹掉。
+     * 三条一起钉：种得上、光有 Cookie 能进、Cookie 错了照样拦。
+     */
+    const setCookie = viaQuery.headers.get('set-cookie') || '';
+    if (/o2a_admin=/.test(setCookie) && /HttpOnly/i.test(setCookie) && /SameSite=Strict/i.test(setCookie)) {
+      ok('用 URL 口令进来时顺手换成 HttpOnly Cookie（之后开 /admin/ 不用再带口令）');
+    } else {
+      bad('URL 口令没有换成 Cookie', JSON.stringify(setCookie.slice(0, 96)));
+    }
+    const viaCookie = await fetch(base + '/admin/api/state', {
+      headers: { Cookie: `o2a_admin=${encodeURIComponent(token)}` },
+    });
+    if (viaCookie.status === 200) ok('光有 Cookie 也能进（刷新页面之后靠它）');
+    else bad('Cookie 进不去', `HTTP ${viaCookie.status}`);
+    const badCookie = await fetch(base + '/admin/api/state', { headers: { Cookie: 'o2a_admin=wrong' } });
+    if (badCookie.status === 401) ok('Cookie 写错照样拦（401）');
+    else bad('Cookie 写错竟然放行', `HTTP ${badCookie.status}`);
+
+    // 面板这边负责把地址栏擦干净（hash 要留着，面板靠它记住当前板块）
+    const { readFileSync: rfPanel } = await import('node:fs');
+    const panelHtml = rfPanel(new URL('../src/admin.html', import.meta.url), 'utf8');
+    if (/if \(TOKEN\) history\.replaceState\(null, "", location\.pathname \+ location\.hash\)/.test(panelHtml)) {
+      ok('面板把地址栏里的口令抹掉（replaceState，保留 hash）');
+    } else {
+      bad('面板没抹掉地址栏里的口令', '那它就会一直留在截图和浏览器历史里');
+    }
 
     // 401 的提示文案里提到的用法，必须真的能用
     const msg = await (await fetch(base + '/admin')).json().catch(() => ({}));

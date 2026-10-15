@@ -10,7 +10,7 @@
  * Windows 用户能解），进程内缓存结果，避免每次扫盘都起子进程。
  */
 
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createLogger } from './logger.mjs';
 
@@ -54,18 +54,32 @@ function psExe() {
 export function dpapiUnprotect(base64) {
   if (cache.has(base64)) return cache.get(base64);
   const script = [
+    // 子进程的报错默认按控制台 OEM 编码（这机器上是 GBK）写出来，直接透出来就是乱码。
+    // 先把它钉成 UTF-8，失败信息才读得懂 —— 这条链坏掉时，你手上只有这一行错误。
+    '[Console]::OutputEncoding=[Text.Encoding]::UTF8;',
     'Add-Type -AssemblyName System.Security;',
     '$b=[Convert]::FromBase64String($env:OC_DPAPI_B64);',
     '$p=[System.Security.Cryptography.ProtectedData]::Unprotect($b,$null,',
     '[System.Security.Cryptography.DataProtectionScope]::CurrentUser);',
     '[Console]::Out.Write([Convert]::ToBase64String($p))',
   ].join('');
-  const out = execFileSync(psExe(), ['-NoProfile', '-NonInteractive', '-Command', script], {
+  // ⚠️ 这里用 spawnSync 而不是 execFileSync：`execFileSync` 在没指定 `stdio` 时
+  // **stderr 是继承父进程的**，于是 PowerShell 的原始报错会绕过 logger 直接漏进服务的
+  // stderr（`logs\server.err.log` 里那行读不懂的乱码就是它）。三股流全管起来之后：
+  // 只认 stdout，stderr 收进异常信息里 —— 失败原因既看得见，也继续归 logger 管。
+  const r = spawnSync(psExe(), ['-NoProfile', '-NonInteractive', '-Command', script], {
     encoding: 'utf8',
     env: { ...process.env, OC_DPAPI_B64: base64 },
     windowsHide: true,
     timeout: 20000,
-  }).trim();
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (r.error) throw r.error;
+  if (r.status !== 0) {
+    const hint = String(r.stderr || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+    throw new Error(`DPAPI 子进程退出码 ${r.status}${hint ? `：${hint}` : ''}`);
+  }
+  const out = String(r.stdout || '').trim();
   if (!out) throw new Error('DPAPI 返回空结果');
   const buf = Buffer.from(out, 'base64');
   cache.set(base64, buf);
@@ -113,8 +127,3 @@ export function dpapiStatus() {
   };
 }
 
-export function resetDpapiCache() {
-  cache.clear();
-  failStreak = 0;
-  lastFailAt = 0;
-}

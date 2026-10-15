@@ -771,6 +771,10 @@ window.addEventListener("error", (e) => report("脚本错误: " + (e.message || 
 window.addEventListener("unhandledrejection", (e) => report("异步错误: " + ((e.reason && e.reason.message) || e.reason)));
 
 const TOKEN = new URLSearchParams(location.search).get("token") || "";
+// 口令是给人「第一次打开」用的。它留在地址栏里会被截图、也会留在浏览器历史里，
+// 所以读到手之后立刻把地址栏改回干净的样子。服务端同时种了 HttpOnly 的 Cookie，
+// 刷新或重新打开都还进得去。hash 要留着 —— 面板靠它记住当前在哪个板块。
+if (TOKEN) history.replaceState(null, "", location.pathname + location.hash);
 const H = () => (TOKEN ? { "x-admin-token": TOKEN } : {});
 const J = { "Content-Type": "application/json" };
 
@@ -2772,7 +2776,19 @@ go((location.hash || "#accounts").slice(1));
 bindAccountAuthEvents();
 bindCreditEvents();
 poll();
-setInterval(poll, 3000);
+// 面板经常被丢在后台标签页里挂一整天，而每次 poll 都要服务端现拼约 41KB、
+// 客户端整块重建 DOM（实测服务端 3~7ms —— 别拿 Invoke-WebRequest 量，
+// 那 80 多毫秒大半是客户端开销，详见 技术笔记 七之三之十一）。
+// 切到后台就别问了：省的是**同一个事件循环**，正在流式转发的请求因此少受周期性
+// 干扰；切回前台立刻补一次，看到的数据不会过期。
+let pollTimer = null;
+const startPoll = () => { if (!pollTimer) pollTimer = setInterval(poll, 3000); };
+const stopPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
+if (!document.hidden) startPoll();      // 后台打开的标签页：先一次都不轮询
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopPoll();
+  else { startPoll(); poll(); }
+});
 </script>
 </body>
 </html>

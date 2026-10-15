@@ -467,12 +467,4 @@ function extractState(authorizeUrl) {
   return d?.state || '';
 }
 
-/** 面板用：把华为登录链接按「手机可扫」的形式给出来 */
-export function authLinkHints(task) {
-  return {
-    desktop: task.authorizeUrl,
-    note: '用同一个华为账号在任意浏览器打开即可；链接 10 分钟内有效。',
-  };
-}
-
 export { DEFAULT_APP_CANDIDATES, CLOUD_BASE, STATE_TTL_MS };

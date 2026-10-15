@@ -208,6 +208,8 @@ const registerQueue = new RegisterQueue({
   getConfig: () => config.register || {},
   authFlow,
   accounts: accountStore,
+  // 任务落盘：重启不再把整条队列丢掉（在途任务会被标成「中断，可重试」，见 load()）
+  dataFile: path.join(ROOT, 'data', 'register-tasks.json'),
   onDone: () => runDiscovery('register-done'),
 });
 
@@ -762,7 +764,10 @@ function processStartMs(pid) {
     const out = execFileSync(
       'powershell',
       ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CreationDate | ForEach-Object { $_.ToFileTimeUtc() / 10000 }`],
-      { encoding: 'utf8', windowsHide: true, timeout: 8000 },
+      // stdio 显式收窄：execFileSync 不指定时会**继承**父进程的 stderr，
+      // powershell 的报错就会绕过 logger 漏进 logs\server.err.log（乱码）。
+      // 这里只认 stdout，出错走 catch 返回 0。
+      { encoding: 'utf8', windowsHide: true, timeout: 8000, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     const v = Number(String(out).trim());
     return Number.isFinite(v) && v > 0 ? v : 0;

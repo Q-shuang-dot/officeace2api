@@ -58,11 +58,6 @@ export function isIgnoredCredential(cred, ignoredIds) {
   return false;
 }
 
-/** 从一批凭据里挑出属于忽略名单的那些（给日志用） */
-export function pickIgnoredCredentials(creds = [], ignoredIds) {
-  return (creds || []).filter((c) => isIgnoredCredential(c, ignoredIds));
-}
-
 /**
  * 被忽略名单拦下的那批凭据的「签名」—— 变了才值得说一句。
  *
