@@ -83,6 +83,23 @@ configureLogger({
 });
 const log = createLogger('boot');
 
+/*
+ * 配置里出现代码不认识的项就说一声 —— 放在**最前面**（紧跟 logger）。
+ *
+ * 两个原因：① 配置问题越早说越好，别让人爬到服务起来之后才发现；
+ * ② 单实例保护会把第二个实例挡在 `listen` 之前，告警要是写在 `listen` 回调里，
+ *    换个入口启动就看不见了（正是它自己的正对照实测出来的）。
+ *
+ * 这个项目连着撞到三条**死配置**（写了、文档里也有，但没人读）：
+ * `accounts.rescanSeconds` / `auth.pollSeconds` / `register.sms.fixedCode`。
+ * 填了不生效比不写更坏 —— 它会让人以为「我调过了」，然后去别处找原因。
+ */
+if (config.__unknownKeys?.length) {
+  log.warn('config.json 里有代码不认识的配置项（写错名字了？改了不会生效）', {
+    keys: config.__unknownKeys,
+  });
+}
+
 const usageFile = path.join(ROOT, 'data', 'usage.json');
 const usage = new UsageStore({ file: usageFile });
 

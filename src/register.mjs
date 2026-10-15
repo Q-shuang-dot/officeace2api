@@ -16,7 +16,6 @@
  *   短信验证码来源可插拔：
  *     manual —— 面板里手工填（最省事，一个号填一次）
  *     http   —— 接码平台，配置 URL 模板 + 响应里取码的 JSON 路径
- *     fixed  —— 固定码（本地联调/自建环境用）
  */
 
 import { createLogger } from './logger.mjs';

@@ -12,7 +12,6 @@
     "baseUrl": "",
     "authorization": "",
     "extraHeaders": {},
-    "alwaysStreamUpstream": true,
     "includeUsage": true,
     "timeoutSeconds": 600,
     "maxRetries": 3,
@@ -68,7 +67,6 @@
   },
   "accounts": {
     "enabled": true,
-    "rescanSeconds": 60,
     "onlyEnabled": true
   },
   "auth": {
@@ -85,7 +83,6 @@
     "tickSeconds": 5,
     "sms": {
       "provider": "manual",
-      "fixedCode": "",
       "http": {
         "urlTemplate": "",
         "project": "",

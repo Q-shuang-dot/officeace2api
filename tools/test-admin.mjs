@@ -2228,5 +2228,94 @@ console.log('\n[面板鉴权]');
   }
 }
 
+/* ── 配置卫生：不许留下「写了但没人读」的死配置 ─────────────────────── */
+//
+// 这个项目连着撞到三条死配置，每一条都是"填了不生效"：
+//   · `accounts.rescanSeconds`  —— 号池扫描听的是 `upstream.refreshSeconds`
+//   · `auth.pollSeconds`        —— 真正生效的是 regTimer 的 5 秒（四路轮询叠加）
+//   · `register.sms.fixedCode`  —— `sms.provider` 只实现了 manual / http
+//
+// 共同点：**DEFAULTS 里有、config.example.json 里有、文档里也写了，
+// 就是 `src/` 里没人读**。填了不生效比不写更坏 —— 它会让人以为「我调过了」，
+// 然后去别处找原因（上面那条限流事故就是这么绕远的）。
+//
+// 所以判据钉死两句话：
+//   ① 默认里每个叶子键，都必须在 src/ 里被读到一次；
+//   ② 示例文件里不许出现默认里没有的键（写错名字当场现形）。
+console.log('\n[配置卫生：死配置]');
+{
+  const fs2 = await import('node:fs');
+  const os2 = await import('node:os');
+  const path2 = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const ROOT = path2.resolve(path2.dirname(fileURLToPath(import.meta.url)), '..');
+  const { loadConfig, saveConfig, unknownConfigKeys } = await import('../src/config.mjs');
+
+  // ① 示例文件里没有代码不认识的项
+  const exampleRaw = JSON.parse(fs2.readFileSync(path2.join(ROOT, 'config.example.json'), 'utf8'));
+  const unknown = unknownConfigKeys(exampleRaw);
+  if (unknown.length === 0) ok('config.example.json 里没有代码不认识的配置项');
+  else bad('config.example.json 里有代码不认识的项（写错名字了？）', unknown.join(', '));
+
+  // ①′ 正反对照 —— 这条告警必须"该响的响、不该响的不响"
+  const typo = unknownConfigKeys({ upstream: { alwaysStreamUpstream: true } });
+  if (typo.length === 1 && typo[0] === 'upstream.alwaysStreamUpstream') {
+    ok('对照成立：写错/删掉的键会被报出来', typo[0]);
+  } else {
+    bad('正对照不成立：拼错的键没被报出来', JSON.stringify(typo));
+  }
+  /*
+   * 开放映射（默认值是 `{}` 的表）不许误报。
+   * 这条是**正对照实测出来的**：`maxMaxTokensByModel` 默认是 `{}`，
+   * 用户往里写 `glm-5` / `qwen3` 本来是对的，递归下去却报了
+   * 「maxMaxTokensByModel.glm-5 是代码不认识的配置项」。
+   * 会喊狼来了的告警比没有告警更坏 —— 真写错名字那次就没人看了。
+   */
+  const openMap = unknownConfigKeys({
+    models: { maxMaxTokensByModel: { 'glm-5': 131072 }, alias: { 'gpt-x': 'glm-5.3' } },
+    upstream: { extraHeaders: { 'X-Trace': '1' } },
+  });
+  if (openMap.length === 0) ok('开放映射（默认 {} 的表）里的自定义键不会被误报');
+  else bad('开放映射被误报了', openMap.join(', '));
+
+  // ② 默认里每个叶子键都得有人读
+  //    消费方 = src/ 里**除 config.mjs 之外**的源码 + 面板。
+  //    定义它的那个文件不算"有人读" —— 否则死配置自己就证明自己没死。
+  const defaults = loadConfig(path2.join(ROOT, '__no_such_config__.json'));
+  delete defaults.__file;
+  delete defaults.__unknownKeys;
+  let consumers = '';
+  for (const f of fs2.readdirSync(path2.join(ROOT, 'src'))) {
+    if (f === 'config.mjs' || !/\.(mjs|html)$/.test(f)) continue;
+    consumers += fs2.readFileSync(path2.join(ROOT, 'src', f), 'utf8') + '\n';
+  }
+  const leaves = [];
+  (function walk(o, prefix) {
+    if (o && typeof o === 'object' && !Array.isArray(o)) {
+      for (const [k, v] of Object.entries(o)) walk(v, prefix ? `${prefix}.${k}` : k);
+      return;
+    }
+    leaves.push(prefix);
+  })(defaults, '');
+  // 键名在源码里出现过就算有人读。保守判法：宁可漏报，也不误报让人去删活配置。
+  const dead = leaves.filter((p) => !consumers.includes(p.split('.').pop()));
+  if (dead.length === 0) ok(`配置项全部有人读（${leaves.length} 项，没有死配置）`);
+  else bad(`有 ${dead.length} 个配置项写了没人读（死配置）`, dead.join(', '));
+
+  // ③ 反向对照：新加一个没人读的键，必须被上面那条抓出来
+  //    没有对照的话，"通过"可能只是因为这条测试压根没在找东西。
+  const fakeDead = '__definitelyNotReadByAnyone';
+  if (!consumers.includes(fakeDead) && leaves.length > 0) ok('对照成立：没人读的新键会被判成死配置');
+  else bad('对照不成立，这条测试可能测不到东西');
+
+  // ④ saveConfig 不许把内部字段写进文件（否则面板一保存就多出一条"不认识的项"）
+  const tmp = path2.join(os2.tmpdir(), `o2a-cfgtest-${process.pid}.json`);
+  saveConfig({ __file: tmp, __unknownKeys: ['a.b'], listen: { port: 1 } });
+  const written = JSON.parse(fs2.readFileSync(tmp, 'utf8'));
+  if (!('__unknownKeys' in written) && !('__file' in written)) ok('saveConfig 不会把内部字段写进 config.json');
+  else bad('内部字段被写进配置文件了', JSON.stringify(written));
+  fs2.rmSync(tmp, { force: true });
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

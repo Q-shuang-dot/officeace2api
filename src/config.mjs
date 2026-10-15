@@ -46,7 +46,6 @@ const DEFAULTS = {
     baseUrl: '',
     authorization: '',
     extraHeaders: {},
-    alwaysStreamUpstream: true,
     includeUsage: true,
     timeoutSeconds: 600,
     maxRetries: 3,
@@ -148,6 +147,15 @@ const DEFAULTS = {
     history: true, // 记历史快照，用来看消耗速度
     // 凭据自动续期：临时 AK/SK 只有 24 小时，用 refresh_token（能撑 30 天）自动换新的
     autoRefreshCredentials: true,
+    /*
+     * 自动续期的三个旋钮 —— index.mjs 一直在读它们，但**默认值里以前没有**，
+     * 只有 config.example.json 和文档里写了。后果是：config.json 里写了这几项的人
+     * 会被告警说"代码不认识的配置项"（新加的启动检查），而实际上代码是认的。
+     * 默认值必须和文档/示例一致，别让三处各说各话。
+     */
+    autoRenewCredentials: true, // 总开关
+    renewLeadRatio: 0.25, // 提前量 = 本轮寿命 × 这个比例（代码里夹在 0.02~0.9）
+    renewBeforeHours: 3, // 提前量的上限（24 小时的寿命别为"剩 6 小时"白换一份）
     refresh: {
       tokenUrl: 'https://sts.cn-north-4.myhuaweicloud.com/v1/oauth2/tokens',
       clientId: 'pdp5_for_agentarts',
@@ -169,7 +177,6 @@ const DEFAULTS = {
   // 号池：把本机（和手工导入的）账号聚合成一等公民
   accounts: {
     enabled: true,
-    rescanSeconds: 60,
     onlyEnabled: true, // 只把「已启用」账号的凭据喂给上游连接池
   },
   // 一键授权：默认自动探测本机 OfficeAce API，留空走内置候选列表
@@ -187,9 +194,8 @@ const DEFAULTS = {
     autoAuth: true,
     tickSeconds: 5,
     sms: {
-      // manual —— 面板里手工填码；http —— 接码平台；fixed —— 固定码（自建环境）
+      // manual —— 面板里手工填码；http —— 接码平台
       provider: 'manual',
-      fixedCode: '',
       http: {
         urlTemplate: '',
         project: '',
@@ -206,6 +212,52 @@ const DEFAULTS = {
     },
   },
 };
+
+/**
+ * 找出「配置文件里有、DEFAULTS 里没有」的项（返回点分路径）。
+ *
+ * 为什么要有这个：本项目连着撞到**三条死配置** —— 写了、文档里也写了、
+ * 示例里也有，但代码里根本没人读：
+ *
+ *   accounts.rescanSeconds      （号池扫描听的是 upstream.refreshSeconds）
+ *   auth.pollSeconds            （真正生效的是 regTimer 的 5 秒）
+ *   register.sms.fixedCode      （sms.provider 只实现了 manual / http）
+ *
+ * 填了不生效比不写更坏：它会让人以为「我调过了」。启动时把这类项 warn 一下，
+ * 名字写错当场就能看见，而不是等哪天发现"改了配置没反应"。
+ *
+ * ⚠️ 这只查得出"文件里有、默认里没有"。反过来那种「默认里有、文件里也有、
+ *    但代码没人读」的死配置，靠 `tools/test-admin.mjs` 里的配置卫生测试守。
+ */
+export function unknownConfigKeys(raw, base = DEFAULTS, prefix = '') {
+  const out = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const root = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k.startsWith('__')) continue; // 内部字段（__file / __unknownKeys）不算配置
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (!(k in root)) {
+      out.push(key);
+      continue;
+    }
+    const baseVal = root[k];
+    /*
+     * 默认值是**空对象** = 开放映射，键由用户自己定，不递归检查。
+     *
+     * 这条是正对照实测出来的：`maxMaxTokensByModel: {}` 那种表，
+     * 用户往里写 `glm-5` / `qwen3` 本来是**对的**，递归下去却会报
+     * 「maxMaxTokensByModel.glm-5 是代码不认识的配置项」—— 一条假告警。
+     * 会喊狼来了的告警比没有告警更坏：真写错名字那次就没人看了。
+     * 同类还有 `models.alias` / `upstream.extraHeaders`。
+     */
+    const openMap =
+      baseVal && typeof baseVal === 'object' && !Array.isArray(baseVal) && Object.keys(baseVal).length === 0;
+    if (!openMap && v && typeof v === 'object' && !Array.isArray(v)) {
+      out.push(...unknownConfigKeys(v, baseVal, key));
+    }
+  }
+  return out;
+}
 
 function deepMerge(base, override) {
   if (Array.isArray(base) || Array.isArray(override)) return override ?? base;
@@ -239,6 +291,8 @@ export function loadConfig(configPath) {
   if (process.env.OFFICEACE2API_AUTHORIZATION) config.upstream.authorization = process.env.OFFICEACE2API_AUTHORIZATION;
 
   config.__file = file;
+  // 配置这一层还没有 logger，先挂上去，等 index.mjs 起来之后 warn
+  config.__unknownKeys = unknownConfigKeys(raw);
   return config;
 }
 
@@ -247,5 +301,8 @@ export function saveConfig(config) {
   if (!file) return;
   const clone = { ...config };
   delete clone.__file;
+  // 必须一起删掉：否则面板一保存，这个内部字段就被写进 config.json，
+  // 下次启动它自己又变成一条"不认识的配置项"。
+  delete clone.__unknownKeys;
   fs.writeFileSync(file, JSON.stringify(clone, null, 2));
 }
