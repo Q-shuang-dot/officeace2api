@@ -138,6 +138,12 @@ accountStore.refreshState = credits.refreshState;
 const authFlow = new AuthFlow({
   accounts: accountStore,
   appApis: config.auth?.appApis || [],
+  // 问云端同一 state 的节奏。这条配置以前没人读（死配置），真正生效的是
+  // regTimer 的 5 秒 + 注册状态机 + 面板 + 桌面端四路叠加，直接把 state
+  // 问进云端的限流里（AgentArts.1100011）。
+  pollSeconds: config.auth?.pollSeconds,
+  // 授权链接的有效期。同样是死配置 —— 代码里原本写死 10 分钟，改配置不生效。
+  stateTtlMinutes: config.auth?.stateTtlMinutes,
   onBound: async (task) => {
     // 一键授权进来的号只有档案、没有网关凭据 —— 先补上再重新发现，
     // 否则下一次发现会把这个"没有凭据的号"原样扫进来，用户以为加成功了却用不了。

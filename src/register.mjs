@@ -180,7 +180,11 @@ export class RegisterQueue {
               task.status = c.activation?.autoActivate !== false ? 'activating' : 'done';
               this._event(task, `授权完成，账号 ${task.accountId || view.newUserId} 已入池`);
             } else if (view.status === 'expired' || view.status === 'failed') {
-              throw new Error(`一键授权未完成：${view.error || view.status}`);
+              // 链接过期**不等于**这个号没戏 —— 10 分钟是给人点击的窗口，超时是常态
+              // （人不在电脑前、还没注册完、手慢一点都会超）。
+              // 所以退回去重新发起一条**新的**授权链接，次数由 maxAttempts 兜住，
+              // 而不是当场把这个号判死。
+              this._restartAuth(task, `一键授权未完成：${view.error || view.status}`);
             } else {
               task.status = 'awaiting_auth';
             }
@@ -198,7 +202,8 @@ export class RegisterQueue {
             task.status = c.activation?.autoActivate !== false ? 'activating' : 'done';
             this._event(task, '授权完成，账号已入池');
           } else if (view.status === 'expired' || view.status === 'failed') {
-            throw new Error(`一键授权失败：${view.error || view.status}`);
+            // 同上：换一条新链接重来，不把一个还在等的号直接判死
+            this._restartAuth(task, `一键授权失败：${view.error || view.status}`);
           }
           break;
         }
@@ -415,6 +420,29 @@ export class RegisterQueue {
     t.updatedAt = Date.now();
     this._event(t, '手动重试');
     return this.view(t);
+  }
+
+  /**
+   * 授权链接过期/失败之后，重新发起一条。
+   *
+   * 为什么重来而不是判死：10 分钟是**给人点击**的窗口，超时是常态 ——
+   * 人不在电脑前、注册页还没走完、手慢一点都会超。旧代码在这里直接 throw
+   * 成失败，于是「用户去接杯水回来」就变成一个失败任务。
+   *
+   * 退回 `submitted`：等过 `waitBeforeAuthMs` 会重新 `authFlow.start()` 拿一条
+   * **新链接**（新的 state）。新链接会自动出现在面板「授权任务」列表里
+   * （带「打开登录页」按钮），label 里带手机号，认得出是哪个号。
+   * 次数由 `maxAttempts` 兜住，不会无限重来。
+   *
+   * 仍然 throw：让 attempts 计数和 UI 上的错误信息都留着 —— 用户要看得见
+   * 「这条链接过期了，已经给你换了一条」。
+   */
+  _restartAuth(task, reason) {
+    task.authTaskId = '';
+    task.status = 'submitted';
+    task.submittedAt = Date.now();
+    task.authRestarts = (task.authRestarts || 0) + 1;
+    throw new Error(`${reason}（已换一条新的授权链接，第 ${task.authRestarts} 次）`);
   }
 
   view(task) {

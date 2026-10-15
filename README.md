@@ -292,6 +292,8 @@ officeace2api/
 - `node tools/test-admin.mjs` —— 控制台接口自测（246 项）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
 - `node tools/test-model-probe.mjs` —— 模型可用性探测的单元测试（41 项）
+- `node tools/test-authflow-poll.mjs` —— 一键授权的轮询节奏测试（27 项，把 `node:https` 换成假的**数请求次数**：
+  未到点不碰云端 / 四路并发只发一次 / 被限流就指数退避到 60 秒封顶 / 「还没好」不许被记成事件）
 - `node tools/stress-deep41.mjs` —— 大批量压测：长会话 / 长上下文 / 高并发 / 全模型混打（会真花额度，`--all` 拉满）
 - `node tools/diag-empty-window.mjs` —— 撞「推理吃光预算、正文为空」那个窗口
 - `node tools/diag-upstream-limits.mjs` —— 摸上游的两条上限：messages 5000 条 / token 窗口
