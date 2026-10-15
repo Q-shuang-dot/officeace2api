@@ -23,6 +23,10 @@ config.json
 config.local.json
 config.*.local.json
 
+# 改代码前留的本地备份（config.json.bak-* 里**带面板 token**，别手滑提交）
+*.bak-*
+*.bak
+
 # 日志
 logs/
 *.log

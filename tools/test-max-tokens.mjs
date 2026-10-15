@@ -175,5 +175,99 @@ console.log('\n【7】exactMaxTokens：重试要真的抬高预算');
   else bad('retry 标记漏在 body 里了');
 }
 
+/*
+ * 【8】maxMaxTokens：夹住上游的硬上限
+ *
+ * 这一节盯的是一个**实测踩到过的确定性失败**：上面那套「追加推理预算」是加法，
+ * 客户端给的正好是上游上限时会被顶出去 ——
+ *
+ *   max_tokens=393216  →  393216 + 1024 = 394240  →  400 ModelArts.81001
+ *   （上游原文：`max_tokens range is [1, 393216]`）
+ *
+ * 请求不变、打一百遍一样被拒，客户端只会觉得"反代一直是坏的"。
+ * 触发它的是一条很常见的链路：网关按 maxOutputTokens 向客户端声明能力，
+ * 客户端照着那个数发。
+ */
+console.log('\n【8】maxMaxTokens：夹住上游硬上限');
+{
+  // ① 就是这个 bug：客户端给上游上限，加完预算顶出去，必须被夹回来
+  const { out, note } = build({ max_tokens: 393216 }, { minMaxTokens: 1024, maxMaxTokens: 393216 });
+  if (out.max_tokens === 393216) ok('393216 + 1024 = 394240 被夹回 393216（原故障用例）', String(out.max_tokens));
+  else bad('没夹住上游上限', `${out.max_tokens} —— 上游会 400 ModelArts.81001`);
+  if (note?.clamped === true && note.to === 393216 && note.from === 394240) ok('note 带上 clamped，日志才分得清"夹上限"和"抬下限"', JSON.stringify(note));
+  else bad('clamped 标记不对', JSON.stringify(note));
+
+  // ② 各家上限不一样，按模型配了就得各按各的夹
+  const perFamily = [
+    ['glm-5.3 上限 131072', 131072, 131072],
+    ['qwen3-32b 上限 65536', 65536, 65536],
+  ];
+  for (const [label, cap, want] of perFamily) {
+    const { out: o } = build({ max_tokens: 393216 }, { minMaxTokens: 1024, maxMaxTokens: cap });
+    if (o.max_tokens === want) ok(`${label}：393216 被夹到 ${want}`);
+    else bad(`${label} 夹错了`, String(o.max_tokens));
+  }
+
+  // ③ 夹的是**上限**，不是下限：没到上限的请求一个字节都不许动
+  const { out: o3, note: n3 } = build({ max_tokens: 1000 }, { minMaxTokens: 1024, maxMaxTokens: 393216 });
+  if (o3.max_tokens === 2024) ok('没到上限的照旧只加预算（1000 → 2024）', String(o3.max_tokens));
+  else bad('把没到上限的请求也改了', String(o3.max_tokens));
+  if (!n3?.clamped) ok('没夹就不该有 clamped 标记');
+  else bad('不该标 clamped', JSON.stringify(n3));
+
+  // ④ 边界：正好等于上限 → 不算超，不夹（不产生多余的日志）
+  const { out: o4, note: n4 } = build({ max_tokens: 1024 }, { minMaxTokens: 1024, maxMaxTokens: 2048 });
+  if (o4.max_tokens === 2048 && !n4?.clamped) ok('正好等于上限 2048 不动（只记账 allowance）', JSON.stringify(n4));
+  else bad('边界值处理不对', `${o4.max_tokens} note=${JSON.stringify(n4)}`);
+  const { out: o5 } = build({ max_tokens: 1025 }, { minMaxTokens: 1024, maxMaxTokens: 2048 });
+  if (o5.max_tokens === 2048) ok('超过一个 token 就夹（1025 + 1024 = 2049 → 2048）', String(o5.max_tokens));
+  else bad('超界没夹', String(o5.max_tokens));
+
+  // ⑤ 关掉上限 = 完全不动（老行为）
+  for (const off of [0, null, undefined, 'abc', NaN]) {
+    const { out: o } = build({ max_tokens: 393216 }, { minMaxTokens: 1024, maxMaxTokens: off });
+    if (o.max_tokens === 394240) ok(`maxMaxTokens=${String(off)} 等价于不夹`, String(o.max_tokens));
+    else bad(`maxMaxTokens=${String(off)} 不该夹`, String(o.max_tokens));
+  }
+
+  // ⑥ 客户端没给 max_tokens → 上限也不许凭空造一个出来
+  const { out: o6, note: n6 } = build({ messages: [] }, { minMaxTokens: 1024, maxMaxTokens: 393216 });
+  if (!('max_tokens' in o6) && !n6) ok('没给就还是不补（上限也不补）');
+  else bad('凭空造了 max_tokens', `${o6.max_tokens} note=${JSON.stringify(n6)}`);
+
+  // ⑦ 极小值照旧原样透传，上限管不着它
+  for (const tiny of [1, 2, 5, 15]) {
+    const { out: t } = build({ max_tokens: tiny }, { minMaxTokens: 1024, maxMaxTokens: 393216 });
+    if (t.max_tokens === tiny) ok(`max_tokens=${tiny} 原样透传（远在上限之下）`);
+    else bad(`max_tokens=${tiny} 被改了`, String(t.max_tokens));
+  }
+
+  // ⑧ 关掉 allowance 也照样守上限（上限是上游的硬规矩，跟预算开不开无关）
+  const { out: o8, note: n8 } = build({ max_tokens: 393216 }, { minMaxTokens: 0, maxMaxTokens: 131072 });
+  if (o8.max_tokens === 131072) ok('minMaxTokens=0 时上限仍然生效', String(o8.max_tokens));
+  else bad('allowance 关掉把上限也关了', String(o8.max_tokens));
+  if (n8?.mode === 'clamp') ok('没抬过预算时 mode 记成 clamp', JSON.stringify(n8));
+  else bad('mode 应该是 clamp', JSON.stringify(n8));
+
+  // ⑨ 重试那条路（exactMaxTokens）也得守上限 —— 算出来的数一样可能超
+  const { out: o9 } = build({ max_tokens: 64 }, { minMaxTokens: 1024, maxMaxTokens: 131072, exactMaxTokens: 999999 });
+  if (o9.max_tokens === 131072) ok('exactMaxTokens=999999 被夹到 131072');
+  else bad('重试路径漏了上限', String(o9.max_tokens));
+
+  // ⑩ 非数字的客户端值不许被上限"救活"成数字
+  const { out: o10 } = build({ max_tokens: 'abc' }, { minMaxTokens: 1024, maxMaxTokens: 393216 });
+  if (o10.max_tokens === 'abc') ok('非数字原样透传（不崩、不被改）');
+  else bad('非数字被改坏了', String(o10.max_tokens));
+
+  // ⑪ 上限得是整数（上游只认整数，小数上限不该原样发出去）
+  const { out: o11 } = build({ max_tokens: 393216 }, { minMaxTokens: 1024, maxMaxTokens: 131072.4 });
+  if (o11.max_tokens === 131072) ok('小数上限取整', String(o11.max_tokens));
+  else bad('小数上限没取整', String(o11.max_tokens));
+
+  // ⑫ 标记照旧摘干净
+  if (!('__o2aBumped' in out)) ok('夹取标记也摘干净了');
+  else bad('夹取标记漏在 body 里了');
+}
+
 console.log(`\n═══ 结果：${pass} 通过 / ${fail} 失败 ═══\n`);
 process.exit(fail ? 1 : 0);

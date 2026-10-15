@@ -109,6 +109,36 @@ export function buildUpstreamBody(body, model, options = {}) {
     // 我们凭空塞一个反而可能比上游默认还小。
   }
 
+  /**
+   * `maxMaxTokens`：这一发发给上游的 `max_tokens` **硬上限**（按模型解析，见 server.mjs）。
+   *
+   * 为什么必须有：上面那套「追加推理预算」是**加法**，而上游自己也有范围 ——
+   * 实测上游原文：
+   *   `max_tokens参数非法：限制数值范围[1,131072]`（glm-5.x）
+   *   `This model's maximum context length is 131072 tokens. However, you requested
+   *    131081 tokens (9 in the messages, 131072 in the completion).`（qwen3-32b）
+   *   `max_tokens range is [1, 393216]`（deepseek）
+   *
+   * 客户端要是给的正好是上游上限，加完 1024 就顶出去了：
+   *
+   *   max_tokens=393216  →  393216 + 1024 = 394240  →  400 ModelArts.81001
+   *
+   * 而且是**确定性失败**：请求不变，打一百遍一样被拒（server.mjs 里认得出这种
+   * 错误、不重试，所以客户端看到的就是"一直报错"）。VS Code → 网关 → 反代这条
+   * 链路就是这么坏的：网关把逻辑模型的 maxOutputTokens 当能力声明给客户端，
+   * 客户端照着给 393216，到这儿被加成了 394240。
+   *
+   * 注意这里是**夹上限、不是设下限**：客户端要多少仍然是多少，只是在"要得比上游
+   * 能给的还多"时收到上游真正能给的那个数。客户端没给 `max_tokens` 时不凭空造一个
+   * （那种情况上游用自己的默认值，实测够用）。
+   */
+  const ceiling = Math.max(0, Math.round(Number(options.maxMaxTokens) || 0));
+  if (ceiling > 0 && Number.isFinite(Number(out.max_tokens)) && Number(out.max_tokens) > ceiling) {
+    const asked = Number(out.max_tokens);
+    out.max_tokens = ceiling;
+    bumped = { from: asked, to: ceiling, mode: bumped ? bumped.mode : 'clamp', clamped: true };
+  }
+
   if (alwaysStream) {
     out.stream = true;
     if (includeUsage && out.stream_options === undefined) {

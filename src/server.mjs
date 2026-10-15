@@ -345,6 +345,8 @@ export function createApp(ctx) {
    * 客户端是轮询式的（每轮都带 64），不记的话一条对话能刷出几百行。
    */
   const bumpWarned = new Set();
+  /** 同上，夹上限的提示也只提醒一次。 */
+  const clampWarned = new Set();
 
   /**
    * 这个模型要额外追加多少「推理预算」token。
@@ -386,6 +388,39 @@ export function createApp(ctx) {
     }
     const allowance = cfg.minMaxTokens === undefined ? 1024 : Math.max(0, Number(cfg.minMaxTokens) || 0);
     return allowance > 0 && isReasoningModel(model) ? allowance : 0;
+  }
+
+  /**
+   * 这个模型发给上游的 `max_tokens` 硬上限（0 = 不夹）。
+   *
+   * 上游自己也有范围，而且**各家不一样**（实测原文见 upstream.mjs 的 maxMaxTokens）：
+   *
+   *   glm-5.x    → 限制数值范围 [1, 131072]
+   *   qwen3-32b  → 上下文 131072 就是上限，且 max_tokens 和提示词**一起**算，
+   *                所以给它留余量（这里配 65536），别按上下文满编
+   *   deepseek / kimi → 393216 以内都收
+   *
+   * 为什么需要：`bumpMaxTokensFor` 那套「追加推理预算」是加法，客户端给到上限时
+   * 会被顶出去（393216 + 1024 = 394240 → 上游 400 ModelArts.81001，确定性失败）。
+   * 所以追加之后再夹一道，见 upstream.mjs。
+   *
+   * 匹配规则：忽略大小写和 `._-`，**前缀命中**（填 `glm-5` 就覆盖 glm-5.1/5.2/5.3），
+   * 多个键都命中时取**最长**的那个（更精确的赢）。没命中就回落到全局 `maxMaxTokens`。
+   */
+  function maxTokensCeilingFor(model) {
+    const cfg = config.models || {};
+    const perModel = cfg.maxMaxTokensByModel || {};
+    const norm = (s) => String(s || '').toLowerCase().replace(/[._\s-]/g, '');
+    const target = norm(model);
+    let best = null;
+    for (const [k, v] of Object.entries(perModel)) {
+      const n = norm(k);
+      if (!n || !(target === n || target.startsWith(n))) continue;
+      const value = Math.max(0, Number(v) || 0);
+      if (!best || n.length > best.len) best = { len: n.length, value };
+    }
+    if (best) return best.value;
+    return cfg.maxMaxTokens === undefined ? 0 : Math.max(0, Number(cfg.maxMaxTokens) || 0);
   }
 
   /**
@@ -510,12 +545,25 @@ export function createApp(ctx) {
         // 推理模型的下限抬升。全局一个数就够用：不给下限的话，客户端按
         // 老习惯给的 max_tokens:64 会被推理全吃掉，正文是空的（见 upstream.mjs 注释）。
         minMaxTokens: bumpMaxTokensFor(model),
+        // 追加完再夹一道上游上限。缺了这行，客户端给 max_tokens=393216（就是上游
+        // 上限）时会被加 1024 顶成 394240，上游直接 400，而且是确定性失败。
+        maxMaxTokens: maxTokensCeilingFor(model),
         // 重试那一发用抬高后的预算（否则就是原样重发一遍，见 emptyRetryMaxTokens 的注释）
         exactMaxTokens: emptyRetryMaxTokens,
       });
       // 标记要当场摘掉 —— 留在 body 里会被原样发给上游
       const bumpNote = takeBumpNote(upstreamBody);
-      if (bumpNote && !bumpWarned.has(model)) {
+      if (bumpNote?.clamped) {
+        // 夹上限和"抬下限"是两回事，分开记账，别让下面那条日志说谎
+        if (!clampWarned.has(model)) {
+          clampWarned.add(model);
+          log.info('客户端要的 max_tokens 超过上游上限，已夹到上限', {
+            model,
+            clientAsked: bumpNote.from,
+            sentToUpstream: bumpNote.to,
+          });
+        }
+      } else if (bumpNote && !bumpWarned.has(model)) {
         bumpWarned.add(model);
         log.info('这个模型会先推理再作答，已把过小的 max_tokens 抬到下限', {
           model,
