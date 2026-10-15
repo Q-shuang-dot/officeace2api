@@ -219,7 +219,10 @@ function runDiscovery(reason = 'startup') {
   let accountCreds = [];
   if (config.accounts?.enabled !== false) {
     try {
-      accountStore.scan();
+      // 只有周期刷新这一路是「看看有没有变」，可以合并同一秒里的重复扫描
+      // （它每 45 秒本来就会再来一次）。其余 reason 都表示**刚发生了某件事** ——
+      // 删除 / 恢复 / 导入 / 授权完成 / 面板按钮 / 配置改动 —— 必须拿到此刻的真实状态。
+      accountStore.scan({ cached: reason === 'interval' });
       accountCreds = poolCredentialsFromAccounts();
       // 新冒出来的账号（刚授权 / 刚注册完）顺手把积分也拉一次
       if (config.credits?.enabled !== false) {

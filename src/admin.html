@@ -621,8 +621,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <h2 class="pg">运行日志
       <span style="flex:1"></span>
       <div class="seg" id="logLevel">
-        <button data-l="" class="on">全部</button>
-        <button data-l="info">INFO</button>
+        <button data-l="">全部</button>
+        <button data-l="info" class="on">INFO</button>
         <button data-l="warn">WARN</button>
         <button data-l="error">ERROR</button>
       </div>
@@ -780,7 +780,13 @@ let S = null;            // 最新 state
 let mdlShowUnavail = false;
 let page = "accounts";
 let callFilter = "all";
-let logLevel = "";
+// 默认档位是 INFO，不是「全部」。
+//
+// 「全部」会把 DEBUG 一起倒出来，而那里面装的是短周期轮询的细节（授权流程每
+// 3 秒问一次云端、注册队列每 5 秒推进一步）—— 一次轮询一行，几十秒就把屏幕刷满，
+// 真正要看的 WARN/ERROR 反而被埋了。
+// 默认 INFO 的含义是「有事发生」，DEBUG 想看再切过去。
+let logLevel = "info";
 let logAuto = true;
 let playStream = true;
 let playAbort = null;
@@ -1447,11 +1453,18 @@ function renderCalls() {
 }
 
 /* ---------------- 日志 ---------------- */
+
+// 档位是「最低级别」而不是「精确匹配」：选 INFO 就是 INFO + WARN + ERROR。
+// 精确匹配有个致命毛病 —— 选 INFO 会把 WARN/ERROR 一起藏起来，于是没人敢把
+// 默认档从「全部」挪开，而「全部」又把 DEBUG 的轮询细节全倒出来（几十秒满屏）。
+// 改成「>= 选中档位」之后，默认 INFO 既能看见报错、又不用看轮询细节。
+const LOG_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
+
 function renderLogs() {
   if (!logAuto && renderLogs._done) return;
   const q = ($("#logFilter").value || "").toLowerCase();
   let list = S.logs || [];
-  if (logLevel) list = list.filter((l) => l.level === logLevel);
+  if (logLevel) list = list.filter((l) => (LOG_RANK[l.level] ?? 0) >= LOG_RANK[logLevel]);
   if (q) list = list.filter((l) => (l.msg + " " + l.scope + " " + JSON.stringify(l.extra || {})).toLowerCase().includes(q));
   const box = $("#logBox");
   const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;

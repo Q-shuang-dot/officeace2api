@@ -228,7 +228,9 @@ export class AuthFlow {
     // 4) 扫盘：新账号目录出现即视为授权完成
     if (this.accounts) {
       const before = new Set(task.beforeUserIds);
-      this.accounts.scan();
+      // cached：这条轮询每 3 秒跑一次，同一秒里撞上别的调用方时复用上一次结果就够了。
+      // 真冒出新账号也不会漏 —— 下一轮（3 秒后）照样看得见，而授权本来就要等下一轮。
+      this.accounts.scan({ cached: true });
       const fresh = this.accounts.ids().filter((x) => !before.has(x));
       if (fresh.length) {
         task.newAccountId = fresh[0];

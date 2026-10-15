@@ -1586,6 +1586,79 @@ console.log('\n[刷新与统计]');
   }
 }
 
+  /* -------------------------------------------------- 号池扫描的日志 */
+  // 这一节盯的是「日志被同一句话糊住」这件事。
+  //
+  // 起因：scan() 的调用方周期都很短（一键授权 3 秒 / 注册队列 5 秒 / 周期刷新
+  // 45 秒 / 面板按钮），而它以前**无条件**打一条 INFO。实测日志 400 行里有 274 行
+  // 都是同一句「号池扫描完成 {"accounts":2,"credentials":2}」，真正的事件
+  // （新增账号、凭据数变了、被忽略名单拦下）全被埋在里头看不见。
+  // 现在的规矩：有变化才 INFO（带变化前的数字），没变化退到 DEBUG 且限流。
+  {
+    const { AccountStore: Store } = await import('../src/accounts.mjs');
+    const { getRecentLogs, clearRecentLogs } = await import('../src/logger.mjs');
+    const scans = (level) =>
+      getRecentLogs().filter((l) => l.msg.startsWith('号池扫描完成') && (!level || l.level === level));
+
+    const st = new Store({ dataFile: '' });
+    st.save = () => {};
+    clearRecentLogs();
+
+    st.scan(); // 第一次没有基线，一定算「有变化」
+    if (scans('info').length === 1) ok('号池扫描：首扫（没有基线）算有变化 → INFO');
+    else bad('号池扫描：首扫没打 INFO', JSON.stringify(scans().map((l) => l.level)));
+
+    for (let i = 0; i < 3; i += 1) st.scan(); // 池子没变，连扫三次
+    if (scans('info').length === 1) {
+      ok('号池扫描：没变化时不再重复打 INFO', `连扫 3 次仍是 1 条`);
+    } else {
+      bad('号池扫描：没变化也一直打 INFO', `${scans('info').length} 条`);
+    }
+
+    // 心跳：没变化也不能完全静默，否则看不出扫描还活着（限流 5 分钟一条）
+    if (scans('debug').length <= 1) ok('号池扫描：没变化退到 DEBUG 且限流', `${scans('debug').length} 条`);
+    else bad('号池扫描：DEBUG 心跳没限流', `${scans('debug').length} 条`);
+
+    const logId = [...st.accounts.keys()][0];
+    if (!logId) {
+      console.log('  · 号池扫描：本机没有真实账号可扫，变化那条跳过');
+    } else {
+      clearRecentLogs();
+      st.remove(logId);
+      st.scan(); // 号少了 → 必须冒出一条 INFO，并带上是变化前的数字
+      const hit = scans('info');
+      if (hit.length === 1 && hit[0].extra && hit[0].extra.was) {
+        ok('号池扫描：池子真变了 → INFO，并带变化前的数字', JSON.stringify(hit[0].extra));
+      } else {
+        bad('号池扫描：池子变了没打 INFO 或没带 was', JSON.stringify(hit.map((l) => l.extra)));
+      }
+    }
+
+    // cached：轮询方（授权 3 秒 / 周期刷新）允许「最多慢一秒」，同一秒内复用结果
+    const cch = new Store({ dataFile: '' });
+    cch.save = () => {};
+    cch.scan();
+    const t0 = cch.lastScanAt;
+    cch.scan({ cached: true });
+    if (cch.lastScanAt === t0) ok('号池扫描：cached:true 在同一秒内复用结果（不重复扫盘）');
+    else bad('号池扫描：cached:true 没有合并', `又扫了一遍（${t0} → ${cch.lastScanAt}）`);
+
+    // 默认（fresh）绝不能被合并 —— 删除 / 恢复 / 面板按钮 / 本文件都靠它
+    const fr = new Store({ dataFile: '' });
+    fr.save = () => {};
+    fr.scan();
+    const frId = [...fr.accounts.keys()][0];
+    if (!frId) {
+      console.log('  · 号池扫描：本机没有真实账号，fresh 那条跳过');
+    } else {
+      const wasAt = fr.lastScanAt;
+      fr.remove(frId);
+      fr.scan(); // 同一秒内的 fresh 扫描：改动必须立刻可见
+      if (!fr.accounts.has(frId) && fr.lastScanAt >= wasAt) ok('号池扫描：fresh 不合并 —— 删完立刻扫，改动立刻可见');
+      else bad('号池扫描：fresh 被合并了（拿到改之前的缓存）', `has=${fr.accounts.has(frId)}`);
+    }
+  }
+
   /* -------------------------------------------------- 模型倍率匹配 */
   // 面板上的「使用倍率」列。规则藏在 admin.html 的 `rateFor()` 里，
   // 抠出来跑一遍真实边界：错了不会报错，只会显示一个**看起来合理但是错的**倍率

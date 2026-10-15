@@ -27,6 +27,14 @@ const log = createLogger('accounts');
 
 const SECURE_DIR = path.join('packages', 'api', '.config', 'secure-config-nodejs');
 
+// 同一秒里的重复扫描合并掉。见 scan() 里的说明。
+const SCAN_COALESCE_MS = 1000;
+
+// 「扫完什么都没有变」这件事最多隔这么久往 DEBUG 里留一条心跳，
+// 免得面板「全部」档被同一句话糊住。真要看出扫描还活着，看 lastScanAt 更直接
+// （/admin/api/state 里就有）。
+const SCAN_HEARTBEAT_MS = 5 * 60 * 1000;
+
 /* ------------------------------------------------------------------ 工具 */
 
 export function decodeUserId(dirName) {
@@ -252,6 +260,10 @@ export class AccountStore {
     // 想找回来就在面板上「取消忽略」，因为本服务从不写 OfficeAce 的文件。
     this.meta = { labels: {}, disabled: [], ignored: [], imported: [], order: [] };
     this.lastScanAt = 0;
+    // 上一次扫描的「有几个号、几条凭据」，用来判断这次扫描有没有变化。
+    // 号池扫描的日志只认变化，见 _logScan()。
+    this._scanSummary = null;
+    this._scanBeatAt = 0;
     this.warnings = [];
     // id -> 续期换回来的凭据。只在内存里，scan() 后重新盖上（磁盘那份永远只读）
     this.refreshed = new Map();
@@ -296,7 +308,21 @@ export class AccountStore {
 
   /* ---- 扫盘 ---- */
 
-  scan() {
+  scan({ cached = false } = {}) {
+    // 同一次扫描的合并：只有**轮询方**能省这一步（见下面的 cached）。
+    //
+    // 为什么：这个函数是全量扫盘（每个安装目录 readdir + 逐个文件读、解密），
+    // 而轮询的周期都很短 —— 一键授权每 3 秒问一次云端、周期刷新 45 秒一轮。
+    // 它们撞在一起就是同一秒里连扫两三遍，结果一模一样。实测日志 400 行里有
+    // 274 行是这件事刷出来的（都是同一句"号池扫描完成"）。
+    //
+    // 为什么是调用方显式要求、而不是自己偷偷缓存：
+    //   面板的「重新扫描」按钮 —— 用户点了就要看到此刻的真实状态
+    //   删除 / 恢复 / 导入之后 —— 刚改完池子，不能拿改之前的结果
+    //   tools/test-admin.mjs —— 它测的正是"改完立刻扫"
+    // 这些调用方一律走默认的 fresh 扫描。轮询方（`cached: true`）最多慢一秒，
+    // 而它本来每 3 秒就会再问一次，一秒的延迟对收敛没有任何影响。
+    if (cached && this.lastScanAt && Date.now() - this.lastScanAt < SCAN_COALESCE_MS) return this.list();
     this.warnings = [];
     const map = new Map();
     const ignored = new Set(this.meta.ignored || []);
@@ -499,11 +525,42 @@ export class AccountStore {
     this.accounts = map;
     this.lastScanAt = Date.now();
     this.pruneMetaKeys();
-    log.info('号池扫描完成', {
-      accounts: map.size,
-      credentials: [...map.values()].reduce((n, a) => n + a.credentials.length, 0),
-    });
+    this._logScan();
     return this.list();
+  }
+
+  /**
+   * 号池扫描的日志：**只在真有变化时打 INFO**，没变化就退到 DEBUG 并限流。
+   *
+   * 为什么必须这样：scan() 被短周期轮询反复调用（授权 3 秒 / 注册 5 秒 / 面板
+   * 按钮 / 45 秒周期），而「扫完发现还是 2 个号、2 条凭据」这句话**没有任何信息量**。
+   * 以前它无条件打 INFO，实测把日志刷成 400 行里 274 行都是同一句，真正的事件
+   * （新增账号、凭据数变了、被忽略名单拦下）全被埋在里面看不出来。
+   *
+   * 现在的规矩：
+   *   有变化   → INFO，带上变化前后的数字（面板/文件里都看得见）
+   *   没变化   → DEBUG，且最多每 5 分钟一条心跳，证明扫描还活着
+   *
+   * 注意「没变化」不等于「没事发生」：忽略名单拦下已删除账号的凭据那一步在
+   * boot 的 discover 里另有一条 INFO，不受这里影响。
+   */
+  _logScan() {
+    const summary = {
+      accounts: this.accounts.size,
+      credentials: [...this.accounts.values()].reduce((n, a) => n + a.credentials.length, 0),
+    };
+    const before = this._scanSummary;
+    const changed = !before || before.accounts !== summary.accounts || before.credentials !== summary.credentials;
+    if (changed) {
+      this._scanSummary = summary;
+      this._scanBeatAt = Date.now();
+      log.info('号池扫描完成', before ? { ...summary, was: before } : summary);
+      return;
+    }
+    if (Date.now() - this._scanBeatAt >= SCAN_HEARTBEAT_MS) {
+      this._scanBeatAt = Date.now();
+      log.debug('号池扫描完成（无变化）', summary);
+    }
   }
 
   /**
