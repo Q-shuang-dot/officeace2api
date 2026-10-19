@@ -6,7 +6,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { clearRecentLogs, configureLogger, createLogger, getRecentLogs } from './logger.mjs';
+import { clearRecentLogs, configureLogger, createLogger, getLogSeq, getLogsSince, getRecentLogs } from './logger.mjs';
 import { adminHtml } from './admin.mjs';
 import { saveConfig } from './config.mjs';
 import {
@@ -30,6 +30,7 @@ import {
   TINY_MAX_TOKENS,
 } from './upstream.mjs';
 import { trimSlash } from './util.mjs';
+import { formatChatLine } from './logfmt.mjs';
 
 const log = createLogger('server');
 /**
@@ -42,10 +43,52 @@ const log = createLogger('server');
 const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
+ * 生成速度：**输出 token / 秒**（日志里的 `tps`）。
+ *
+ * 三个刻意的取舍，改之前先看清楚：
+ *
+ *  1. 分子只用 `completion_tokens`，不用 `total_tokens`。后者把提示词也算进去，
+ *     长上下文时能把速度虚高好几倍 —— 那不是"生成快"，是"读得快"。
+ *     拿不到 `completion_tokens` 就返回 null，别拿 total 顶（宁可没有，也别给假数）。
+ *  2. 分母从「第一个数据块」算起，不从请求开始算。`ttftMs` 里那几秒（选号、排队、
+ *     上游冷启动、重试退避）跟生成速度无关，算进去会把慢请求的 tps 拉得莫名其妙。
+ *  3. 观测窗口短于 200ms 就不算。非流式请求、或者上游一次吐完一整块时，
+ *     分子分母都是毛刺，算出来动辄几千上万 tps，纯误导。给 null 表示"这次无意义"。
+ *
+ * @param {{completion_tokens?: number}|null|undefined} usage 上游回的 usage
+ * @param {number} startedAt  请求进入时的 Date.now()
+ * @param {number} firstDataAt 第一个数据块到达的 Date.now()（0/未流式则退回 startedAt）
+ * @param {number} endedAt    结束时的 Date.now()
+ * @returns {number|null} 四舍五入的 tps，算不出来给 null
+ */
+export function calcTps(usage, startedAt, firstDataAt, endedAt) {
+  const out = Number(usage?.completion_tokens ?? 0);
+  if (!(out > 0)) return null;
+  const from = Number(firstDataAt) > 0 ? Number(firstDataAt) : Number(startedAt);
+  const span = Number(endedAt) - from;
+  if (!(span >= 200)) return null;
+  return Math.round((out / span) * 1000);
+}
+
+/**
  * 这个请求是不是从本机来的？
  * `remoteAddress` 在 Windows 上会是 `::ffff:127.0.0.1` 这种映射形式，所以要一起认。
  * 拿不到地址（比如某些自建代理 socket）时按"不是本机"处理 —— 宁可少给字段。
  */
+/**
+ * 进程内请求序号，只用于日志里的 `#N`。
+ * 重启归零是有意的：这个号和日志文件的生命周期对齐，不会出现"日志里没有 #900 却从 #905 开始"。
+ */
+/**
+ * `/admin/api/state` 一次带回多少条日志。
+ *
+ * 60 条大概就是面板「运行日志」一屏能显示的量，再多的靠 `?since=` 增量补
+ * （`/admin/api/logs`）。这个数字调大有代价：它乘以每 3 秒一次的轮询频率。
+ */
+const STATE_LOG_TAIL = 60;
+
+let chatSeq = 0;
+
 function isLoopbackRequest(req) {
   const remote = String(req?.socket?.remoteAddress || '');
   if (!remote) return false;
@@ -522,9 +565,17 @@ export function createApp(ctx) {
       const list = Array.isArray(doc?.data) ? doc.data : Array.isArray(doc) ? doc : [];
       const before = registry.ids().join(',');
       registry.setUpstream(list);
-      log.info('上游模型列表已更新', { count: list.length });
+      /*
+       * 只在目录**真的变了**的时候说一声。
+       *
+       * 原来这行是无条件的，而这里是 45 秒一轮的定时刷新 —— 内容一字不差也照打。
+       * 实测面板那 300 行日志里它占了 22 行（7%），全是噪音；`before` 这个变量本来
+       * 就在手边、下面几行就在用它比较，只是没顺手拿来管这一行。
+       */
+      const changed = registry.ids().join(',') !== before;
+      if (changed) log.info('上游模型列表已更新', { count: list.length });
       // 目录变了 → 「模型不行」的旧结论作废（见 pool.clearModelRejections 的注释）
-      if (registry.ids().join(',') !== before) {
+      if (changed) {
         pool.clearModelRejections((n) => log.info('模型目录变了，已清掉旧的「模型不行」标记', { cleared: n, reason: 'upstream-catalog' }));
       }
       return true;
@@ -534,8 +585,21 @@ export function createApp(ctx) {
     }
   }
 
-  async function runCompletion({ res, body, model, wantStream, apiKey, endpoint, abortSignal }) {
+  async function runCompletion({ res, body, model, wantStream, apiKey, endpoint, abortSignal, req }) {
     const startedAt = Date.now();
+    const seq = ++chatSeq;
+    /*
+     * 日志要用的客户端信息，在这里一次性取好。
+     *
+     * `req` 是可选参数：只为了日志里的 `src=` / `ua=`。将来若有内部调用（比如探测）不走 HTTP，
+     * 传不进来也不影响主流程，照样打 `-`。
+     *
+     * `effort` 只认请求里带的那个值（`reasoning_effort`），不猜、不从配置里补 ——
+     * 日志的作用是记录"客户端要了什么"，补出来的值会让人误判是谁设的。
+     */
+    const clientSrc = req?.socket?.remoteAddress || '';
+    const clientUa = req?.headers?.['user-agent'] || '';
+    const requestedEffort = String(body?.reasoning_effort ?? body?.effort ?? '').trim();
     const maxAttempts = Math.max(1, Number(config.upstream.maxRetries) || 1);
     const timeoutMs = Math.max(30, Number(config.upstream.timeoutSeconds) || 600) * 1000;
     const attempts = [];
@@ -826,13 +890,26 @@ export function createApp(ctx) {
           endpoint,
           credential: cred.baseUrl,
         });
-        log.info('流式完成', {
-          model,
-          attempt: attemptNo,
-          ttftMs: result.firstDataAt ? result.firstDataAt - startedAt : null,
-          totalMs: Date.now() - startedAt,
-          tokens: result.usage?.total_tokens ?? null,
-        });
+        const endedAt = Date.now();
+        log.info(
+          formatChatLine({
+            seq,
+            startedAt,
+            model,
+            stream: true,
+            status: 200,
+            label: ctx.accounts.get(cred.accountId)?.label || '',
+            accountId: cred.accountId,
+            ttfbMs: result.firstDataAt ? result.firstDataAt - startedAt : null,
+            outTokens: result.usage?.completion_tokens ?? null,
+            tps: calcTps(result.usage, startedAt, result.firstDataAt, endedAt),
+            effort: requestedEffort,
+            totalMs: endedAt - startedAt,
+            src: clientSrc,
+            ua: clientUa,
+            attempt: attemptNo,
+          }),
+        );
         // 推理模型把预算全烧在推理上时，流里只有 reasoning_content、正文一个字都没有。
         // 客户端那边就是"转完圈什么都没显示"。这里记一条，让日志能解释这个现象。
         if (
@@ -976,12 +1053,27 @@ export function createApp(ctx) {
         endpoint,
         credential: cred.baseUrl,
       });
-      log.info('非流式完成', {
-        model,
-        attempt: attemptNo,
-        totalMs: Date.now() - startedAt,
-        tokens: payload.usage?.total_tokens ?? null,
-      });
+      log.info(
+        formatChatLine({
+          seq,
+          startedAt,
+          model,
+          stream: false,
+          status: 200,
+          label: ctx.accounts.get(cred.accountId)?.label || '',
+          accountId: cred.accountId,
+          // 非流式没有"首字"这个概念，整段一次到齐 → TTFB 留 `-`，tps 也留 `-`
+          //（拿墙钟当分母算出来的是"含排队+首字的速率"，不是生成速度）
+          ttfbMs: null,
+          outTokens: payload.usage?.completion_tokens ?? null,
+          tps: null,
+          effort: requestedEffort,
+          totalMs: Date.now() - startedAt,
+          src: clientSrc,
+          ua: clientUa,
+          attempt: attemptNo,
+        }),
+      );
       return { status: 200, body: payload };
     }
 
@@ -1110,6 +1202,19 @@ export function createApp(ctx) {
       if (pathname === '/admin/api/state') {
         const creds = pool.list();
         const accountsView = ctx.accounts.list();
+        /*
+         * 快照只取一次。
+         *
+         * 原来这里写着 `usage.snapshot()` 两遍（一次给 `usage`、一次取 `.recent`），
+         * 每次都要深拷贝 200 条调用记录 —— 面板每 3 秒来一次，等于白白多干一倍的活。
+         *
+         * 更要紧的是**同一份数据被装了两遍**：`usage.recent`（上限 200 条）和顶层
+         * `recent`（面板真正用的那个）内容几乎一样，实测这份重复占了 115KB 载荷的 26%。
+         * 面板从头到尾只读顶层 `recent`（见 admin.html 的 renderCalls / renderOverview），
+         * `usage.recent` 一次都没用过，所以这里直接摘掉。
+         */
+        const snap = usage.snapshot();
+        const { recent: recentRows, ...usageSlim } = snap;
         sendJson(res, 200, {
           health: {
             uptimeMs: Date.now() - ctx.startedAt,
@@ -1128,9 +1233,16 @@ export function createApp(ctx) {
           config,
           pool: creds,
           models: registry.detailed(),
-          usage: usage.snapshot(),
-          recent: usage.snapshot().recent,
-          logs: getRecentLogs(),
+          usage: usageSlim,
+          recent: recentRows,
+          /*
+           * 日志只给尾部 60 条 + 序号，剩下的靠 `/admin/api/logs?since=` 增量补。
+           *
+           * 整包搬 300 行的年代，`logs` 单独占了载荷的 30%（34KB，满载能到 62KB），
+           * 而面板一次只看得见一屏、绝大多数轮询期间一行都不会变。
+           */
+          logs: getRecentLogs(STATE_LOG_TAIL),
+          logSeq: getLogSeq(),
           accounts: accountsView,
           accountsStatus: ctx.accounts.status(),
           credits: ctx.credits ? ctx.credits.view() : null,
@@ -1143,6 +1255,19 @@ export function createApp(ctx) {
             tasks: ctx.register.list(),
           },
         });
+        return;
+      }
+
+      /*
+       * 日志增量：`GET /admin/api/logs?since=<序号>`
+       *
+       * 面板每 3 秒轮询时先看 state 里的 `logSeq`，比手里的序号大才来这儿要新增的那几条。
+       * 稳态下这个响应通常只有几百字节到一两 KB（一行式格式之后更小），
+       * 对比过去每次整包搬 300 行 —— 那是面板载荷的三成。
+       */
+      if (pathname === '/admin/api/logs') {
+        const since = new URL(req.url, 'http://localhost').searchParams.get('since');
+        sendJson(res, 200, getLogsSince(since, 300));
         return;
       }
 
@@ -2056,6 +2181,7 @@ export function createApp(ctx) {
         });
         const result = await runCompletion({
           res,
+          req,
           body,
           model,
           wantStream,
@@ -2100,6 +2226,7 @@ export function createApp(ctx) {
         });
         const result = await runCompletion({
           res,
+          req,
           body: chatBody,
           model,
           wantStream: body.stream === true,

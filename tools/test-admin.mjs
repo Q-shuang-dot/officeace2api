@@ -73,6 +73,45 @@ let st = null;
   else bad('state.config.models.alias', '缺失');
   if (st?.config?.upstream?.refreshSeconds !== undefined) ok('state 含 upstream 配置');
   else bad('state.config.upstream', '缺失');
+
+  /*
+   * 载荷瘦身的两条硬约束（面板每 3 秒拉一次，这两处一破就白干）：
+   *   1. `usage.recent` 不许回来 —— 面板从不读它，却和顶层 `recent` 内容相同，
+   *      实测占了 115KB 载荷的 26%
+   *   2. 日志只给尾部 + 序号，增量靠 /admin/api/logs?since=
+   */
+  if (st?.usage && st.usage.recent === undefined) ok('state.usage 不再重复装一份 recent');
+  else bad('state.usage.recent 又回来了', '会把载荷翻倍');
+  if (typeof st?.logSeq === 'number' && st.logSeq > 0) ok('state 带 logSeq 供面板要增量', String(st.logSeq));
+  else bad('state.logSeq', String(st?.logSeq));
+  if (Array.isArray(st?.logs) && st.logs.length <= 60) ok(`state.logs 只给尾部（${st.logs.length} ≤ 60 条）`);
+  else bad('state.logs 条数', String(st?.logs?.length));
+}
+
+console.log('\n[日志增量接口]');
+{
+  const base = st?.logSeq || 0;
+  const empty = await call('/admin/api/logs?since=' + base);
+  if (empty.status === 200 && Array.isArray(empty.json?.lines) && empty.json.lines.length === 0) {
+    ok('GET /admin/api/logs?since=最新 → 空（稳态不搬数据）');
+  } else {
+    bad('/admin/api/logs 无新增时', `HTTP ${empty.status} ${empty.text.slice(0, 120)}`);
+  }
+  // 制造一条日志：扫一次盘（它一定会打一条）
+  await call('/admin/api/accounts/scan', { method: 'POST', body: {} });
+  const inc = await call('/admin/api/logs?since=' + base);
+  const lines = inc.json?.lines || [];
+  if (inc.status === 200 && lines.length > 0 && lines.every((l) => typeof l.seq === 'number' && l.seq > base)) {
+    ok('增量真的只给新行，且序号都在 since 之后', `${lines.length} 条`);
+  } else {
+    bad('/admin/api/logs 增量', `HTTP ${inc.status} lines=${lines.length} ${inc.text.slice(0, 120)}`);
+  }
+  if (inc.json?.seq >= (lines.at(-1)?.seq || 0)) ok('响应的 seq 可用于下一轮续取', String(inc.json?.seq));
+  else bad('/admin/api/logs 的 seq', String(inc.json?.seq));
+  // 面板重启自愈：序号比服务端还大 → 应当回一段尾部而不是空
+  const reset = await call('/admin/api/logs?since=99999999');
+  if ((reset.json?.lines || []).length > 0) ok('序号倒退（服务重启）时回尾部，面板能自愈');
+  else bad('序号倒退时没回尾部', reset.text.slice(0, 120));
 }
 
 console.log('\n[配置读写]');

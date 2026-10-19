@@ -357,15 +357,21 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
-- `node tools/test-admin.mjs` —— 控制台接口自测（277 项，含配置卫生：死配置检测、
+- `node tools/test-admin.mjs` —— 控制台接口自测（284 项，含配置卫生：死配置检测、
   日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie、
-  上游错误体装在 SSE 帧里也要能解析出 `code`/`message`）
+  上游错误体装在 SSE 帧里也要能解析出 `code`/`message`、面板载荷不许把 `usage.recent`
+  整份重复装一遍、日志增量接口只回新行）
 - `node tools/test-dpapi.mjs` —— DPAPI 解密链（13 项，起子进程真解密：真 blob 往返 /
   缓存 / 连续失败进冷却）
 - `node tools/test-register.mjs` —— 批量注册状态机（36 项，不碰网络：去重 / 暂停不跑 /
   `view()` 脱敏 / 落盘与恢复）
-- `node tools/test-logger.mjs` —— 日志落盘与滚动（9 项：留 3 代历史 / 本机时间列 vs
-  UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡）
+- `node tools/test-logger.mjs` —— 日志落盘与滚动（16 项：留 3 代历史 / 本机时间列 vs
+  UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡 / 序号单调递增 /
+  `getLogsSince()` 只回新行、无新增回空、序号倒退时回尾部）
+- `node tools/test-tps.mjs` —— 日志里 `tps`（输出 token/秒）的算法（11 项：只用
+  `completion_tokens` 不掺提示词 / 分母从首字算起 / 窗口太短给 `null` 而不是 0 / 缺数据不猜）
+- `node tools/test-logfmt.mjs` —— 对话日志一行式格式（17 项：字段顺序 / 缺值一律 `-` /
+  UA 里的换行与引号不许把一行拆开 / 超长截断 / `::ffff:` 前缀剥掉 / 重试才出现 `try=N`）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
 - `node tools/test-account-bundle.mjs` —— 账号搬运包（76 项，全在临时目录里跑：加密往返 /
   口令错与篡改都必须失败 / 过期凭据被丢掉 / 死名单并集 / 「本机有活链就不被覆盖」/

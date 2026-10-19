@@ -457,8 +457,10 @@ console.log('\n【10】倍率与计费口径（反代自己算的积分数）');
   else wa('面板查不到这个模型的倍率', MODEL);
 
   // 反代/usage 里记的那条与实际返回对不对得上
+  // ⚠️ state 里调用记录在**顶层 `recent`**；`usage.recent` 已被摘掉（面板从不读它，
+  //    却占了 115KB 载荷的 26%，见 server.mjs 里 /admin/api/state 的注释）
   const st = await (await fetch(BASE + '/admin/api/state', { headers: H })).json();
-  const rec = (st.usage.recent || []).find((r) => r.model === MODEL);
+  const rec = (st.recent || []).find((r) => r.model === MODEL);
   if (rec) {
     // ⚠️ 服务记录里**没有 total_tokens** 这个字段，只有 prompt_tokens / completion_tokens。
     //    第一版我拿 rec.total_tokens 去比，永远得到 undefined，把一条好记录报成"不一致"（已修）。

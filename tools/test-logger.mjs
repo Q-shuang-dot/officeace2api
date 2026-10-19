@@ -18,7 +18,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configureLogger, createLogger, getRecentLogs, localClock, localZone, clearRecentLogs } from '../src/logger.mjs';
+import { configureLogger, createLogger, getLogSeq, getLogsSince, getRecentLogs, localClock, localZone, clearRecentLogs } from '../src/logger.mjs';
 
 let pass = 0;
 const fails = [];
@@ -151,6 +151,54 @@ console.log('日志：落盘与滚动');
   } else {
     bad('级别闸行为不对', JSON.stringify([text.includes('这条不该落盘'), text.includes('这条该落盘'), getRecentLogs().length]));
   }
+}
+
+/* ------------------------------------------------ 6. 序号与增量（面板靠它省载荷） */
+{
+  const f = path.join(dir, 'seq.log');
+  configureLogger({ file: f, level: 'info', keepRecent: 200 });
+  clearRecentLogs();
+  const log = createLogger('自测');
+  for (let i = 1; i <= 5; i += 1) log.info(`增量 ${i}`);
+
+  const all = getRecentLogs();
+  const seqs = all.map((e) => e.seq);
+  const monotonic = seqs.every((s, i) => i === 0 || s > seqs[i - 1]);
+  if (monotonic && getLogSeq() === seqs.at(-1)) ok('每条日志都有递增序号，getLogSeq() 给最后一条');
+  else bad('序号不递增', JSON.stringify(seqs));
+
+  // 尾部 N 条：面板首屏只要这么多
+  const tail = getRecentLogs(2);
+  if (tail.length === 2 && tail.at(-1).msg === '增量 5') ok('getRecentLogs(2) 只回最后 2 条');
+  else bad('getRecentLogs(limit) 不对', JSON.stringify(tail.map((x) => x.msg)));
+
+  // since = 第 3 条 → 只回第 4、5 条
+  const from3 = getLogsSince(seqs[2], 10);
+  if (from3.lines.length === 2 && from3.lines[0].msg === '增量 4' && from3.seq === seqs[4] && !from3.more) {
+    ok('getLogsSince(第3条) 回第 4、5 条，并带上新的 seq');
+  } else {
+    bad('getLogsSince 增量不对', JSON.stringify({ n: from3.lines.length, first: from3.lines[0]?.msg, seq: from3.seq }));
+  }
+
+  // 没有新日志 → 空数组（面板稳态下就是这条路，响应该很小）
+  const same = getLogsSince(seqs[4], 10);
+  if (same.lines.length === 0 && same.seq === seqs[4]) ok('没有新日志时回空（稳态轮询不搬数据）');
+  else bad('无新增时应为空', JSON.stringify({ n: same.lines.length, seq: same.seq }));
+
+  // 序号倒退（服务重启 / 清空日志）→ 回一整段尾部，面板据此重建
+  const weird = getLogsSince(999999, 10);
+  if (weird.lines.length === 5 && weird.seq === seqs[4]) ok('序号比服务端还大时回尾部（重启后自愈）');
+  else bad('序号倒退的处理不对', JSON.stringify({ n: weird.lines.length, seq: weird.seq }));
+
+  // 首次（since=0）也是回尾部
+  const first = getLogsSince(0, 10);
+  if (first.lines.length === 5) ok('since=0 视为首次，回尾部');
+  else bad('since=0 处理不对', String(first.lines.length));
+
+  // limit 截断要置 more=true，下一轮接着要
+  const capped = getLogsSince(seqs[0], 2);
+  if (capped.lines.length === 2 && capped.more) ok('积压超限时截断并置 more=true');
+  else bad('limit 截断不对', JSON.stringify({ n: capped.lines.length, more: capped.more }));
 }
 
 try {

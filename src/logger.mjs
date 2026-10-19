@@ -29,6 +29,14 @@ export function localZone(d = new Date()) {
 let currentLevel = LEVELS.info;
 const recent = [];
 let recentLimit = 300;
+/**
+ * 全进程单调递增的日志序号。
+ *
+ * 存在的理由只有面板：它每 3 秒问一次「有新日志吗」，靠 `since=序号` 拿增量，
+ * 就不用每次都把 300 行整包搬一遍（那曾是面板载荷的 30%）。
+ * 重启归零 —— 面板那边会把 `seq` 变小当成"服务重启过"，直接重拉尾部。
+ */
+let seqNo = 0;
 let logFile = '';
 let fileReady = false;
 
@@ -84,8 +92,40 @@ function rotateLog() {
   return rotated;
 }
 
-export function getRecentLogs() {
-  return [...recent];
+/**
+ * @param {number} [limit] 只要最后 N 条。面板首屏用它（60 条够铺满一屏），
+ *   剩下的滚动过程靠 `getLogsSince()` 增量补 —— 别一次搬 300 条。
+ */
+export function getRecentLogs(limit) {
+  if (!limit || limit >= recent.length) return [...recent];
+  return recent.slice(-limit);
+}
+
+/**
+ * `seq` 之后的日志（不含等于 `seq` 的那条）。
+ *
+ * @param {number} since 面板已经拿到的最后一个序号；0 / 非数 → 当首次拉取
+ * @param {number} [limit] 一次最多给多少条（默认 200）。积压太多时宁可截断，
+ *   下一次轮询会接着要 —— 一屏日志不值得撑爆一次响应。
+ * @returns {{seq:number, lines:object[], more:boolean}}
+ */
+export function getLogsSince(since, limit = 200) {
+  const from = Number(since);
+  const lastSeq = recent.length ? recent[recent.length - 1].seq : 0;
+  if (!Number.isFinite(from) || from <= 0) {
+    // 首次：给尾部一批，让面板有东西可显示
+    return { seq: lastSeq, lines: getRecentLogs(limit), more: false };
+  }
+  // 服务重启过（序号变回小的了）→ 面板手里那批是上一代进程的，直接换成尾部
+  if (from > lastSeq) return { seq: lastSeq, lines: getRecentLogs(limit), more: false };
+  const fresh = recent.filter((e) => e.seq > from);
+  const lines = fresh.length > limit ? fresh.slice(-limit) : fresh;
+  return { seq: lines.length ? lines[lines.length - 1].seq : from, lines, more: fresh.length > limit };
+}
+
+/** 最后一条日志的序号；面板用来判断「要不要拉增量」。 */
+export function getLogSeq() {
+  return recent.length ? recent[recent.length - 1].seq : 0;
 }
 
 export function clearRecentLogs() {
@@ -97,6 +137,9 @@ export function clearRecentLogs() {
 function emit(level, scope, msg, extra) {
   const at = new Date();
   const entry = {
+    // 序号先占位：`recent` 里**所有**级别都要有序号（面板按级别过滤后再拼增量，
+    // 缺号会让它以为中间丢了日志）。但落盘的文本行里不写序号 —— 那行是给人看的。
+    seq: (seqNo += 1),
     ts: at.toISOString(),
     level,
     scope,

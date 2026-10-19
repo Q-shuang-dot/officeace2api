@@ -865,9 +865,52 @@ function setFoot(txt, kind) {
   if (t) t.textContent = txt;
   if (d) d.className = "dot" + (kind ? " " + kind : " on");
 }
+/* ---------------- 日志增量 ---------------- */
+//
+// state 只给最后 60 条 + 一个序号（`logSeq`），新日志靠这个函数要增量。
+//
+// 原来是 state 里整包搬 300 行，而面板每 3 秒拉一次 —— 实测那占了载荷的 30%
+// （34KB，满载能到 62KB），绝大多数轮询期间一行都没变。现在稳态下这个请求
+// 通常只回几百字节。
+let logBuf = [];
+let logSeqSeen = 0;
+async function pullLogs() {
+  const srv = (S && S.logSeq) || 0;
+  // 服务重启 / 面板点过"清空日志"：序号退回小的了，手里那批是上一代进程的，丢掉重建
+  if (srv < logSeqSeen) { logBuf = []; logSeqSeen = 0; }
+  // 首次：拿 state 里那 60 条当起点（不为这点历史再单独要一次 300 条）
+  if (!logSeqSeen) {
+    logBuf = (S.logs || []).slice();
+    logSeqSeen = srv;
+    S.logs = logBuf;
+    return;
+  }
+  if (srv <= logSeqSeen) { S.logs = logBuf; return; }
+  let inc = null;
+  try {
+    inc = await api("admin/api/logs?since=" + logSeqSeen);
+  } catch (e) {
+    return; // 这一轮拿不到就算了，下一轮还会要
+  }
+  if (!inc) return;
+  // 只收序号更新的（服务端在"序号倒退/首次"时会回一整段尾部，按序号过一遍就不会重复）
+  const fresh = (inc.lines || []).filter((e) => (e.seq || 0) > logSeqSeen);
+  if (fresh.length) {
+    logBuf = logBuf.concat(fresh);
+    // 面板留 400 条（列表页也就看到这些），再多纯属占内存
+    if (logBuf.length > 400) logBuf = logBuf.slice(-400);
+    // 新行进来 → 允许重绘（否则 logAuto 关着时永远不再刷新）
+    renderLogs._done = false;
+  }
+  logSeqSeen = inc.seq || logSeqSeen;
+  S.logs = logBuf;
+}
+
 async function poll() {
   try {
     S = await api("admin/api/state");
+    // 拿到 state 之后再补日志增量（只多一个小请求，且多数时候是空）
+    await pullLogs();
     // 侧边栏常驻一行：还剩多少积分，随时能瞄一眼
     const cs = S.credits && S.credits.summary;
     const up = Math.floor((S.health.uptimeMs || 0) / 1000);
@@ -2871,9 +2914,9 @@ go((location.hash || "#accounts").slice(1));
 bindAccountAuthEvents();
 bindCreditEvents();
 poll();
-// 面板经常被丢在后台标签页里挂一整天，而每次 poll 都要服务端现拼约 41KB、
-// 客户端整块重建 DOM（实测服务端 3~7ms —— 别拿 Invoke-WebRequest 量，
-// 那 80 多毫秒大半是客户端开销，详见 技术笔记 七之三之十一）。
+// 面板经常被丢在后台标签页里挂一整天，而每次 poll 都要服务端现拼约 56KB（其中调用记录
+// 30KB 是刚性的，日志已改成增量、单次几百字节）、客户端整块重建 DOM（实测服务端 6~9ms
+// —— 别拿 Invoke-WebRequest 量，那 200 多毫秒大半是它自己的开销，详见 技术笔记 七之三之十一）。
 // 切到后台就别问了：省的是**同一个事件循环**，正在流式转发的请求因此少受周期性
 // 干扰；切回前台立刻补一次，看到的数据不会过期。
 let pollTimer = null;
