@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from './logger.mjs';
-import { listDirs, readJson, safeJson, home, trimSlash, maskSecret } from './util.mjs';
+import { listDirs, readJson, safeJson, home, trimSlash, maskSecret, isMachineScanEnabled } from './util.mjs';
 
 const log = createLogger('discover');
 
@@ -45,6 +45,9 @@ const PLACEHOLDER_KEYS = new Set([
 ]);
 
 function candidateRoots() {
+  // `config.discover.enabled: false` → 不读这台机器上的任何 OfficeAce 目录。
+  // 这里和其它所有扫盘入口共用 util.mjs 里那一个开关（见 setMachineScanEnabled 的注释）。
+  if (!isMachineScanEnabled()) return [];
   const roots = [];
   const h = home();
   roots.push(path.join(h, '.office-claw'));
@@ -158,8 +161,13 @@ function fingerprint(baseUrl, headers) {
 
 /**
  * 扫描本机，返回 { credentials: [...], catalog: [...] }
+ *
+ * `config.discover.enabled: false` 时直接返回空集：连 `OFFICEACE_MODELS_JSON` /
+ * `OFFICEACE_ROUTING_STATE` 这两个显式环境变量也不读 —— 既然说了"别碰这台机器"，
+ * 就别偷偷留后门；真要用它们，把开关打开。
  */
 export function discover({ installDirs = [] } = {}) {
+  if (!isMachineScanEnabled()) return { credentials: [], catalog: [] };
   const credentialMap = new Map();
   const catalog = [];
   const seenCatalog = new Set();

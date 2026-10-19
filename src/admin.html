@@ -385,7 +385,8 @@ button:disabled{opacity:.5;cursor:not-allowed}
         凭据由本服务从本机文件中自动读取，只读不写，不会影响 OfficeAce 客户端本身：<br />
         <code>~/.office-claw/.jiuwenclaw/config/routing_state/users/&lt;账号ID&gt;/models.json</code><br />
         默认每 45 秒重新扫描一次；OfficeAce 刷新凭据后本服务会自动跟进。
-        扫描到 0 条时：点本页右上角「换个账号登录」自己登一个（不需要 OfficeAce 桌面端）；<br />
+        扫描到 0 条时：点本页右上角「换个账号登录」自己登一个（这要本机 OfficeAce 桌面端在跑，
+        它负责换授权链接）；<br />
         如果你已经装了 OfficeAce，也可以登录它并发一条消息，再点「重新发现凭据」。
       </div>
     </section>
@@ -699,7 +700,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
       <div id="adIntro">
         <div class="step on"><span class="n">1</span><div>
           <b>点「开始登录」拿一条授权链接</b>
-          <div class="dim" style="margin-top:3px">链接直接从华为云开通，不用装也不用开 OfficeAce 桌面端。</div>
+          <div class="dim" style="margin-top:3px">链接是从本机 OfficeAce 桌面端换来的，所以它得先装好并运行（默认 <code>127.0.0.1:3004</code>）；没装会提示「没找到本机 OfficeAce 服务」。</div>
         </div></div>
         <div class="step"><span class="n">2</span><div>
           <b>在弹出的新页面里登录华为账号</b>
@@ -1414,7 +1415,7 @@ function renderCreds() {
       c.cooldownMsLeft > 0 ? '<span class="tag warn">' + Math.ceil(c.cooldownMsLeft / 1000) + "s</span>" : '<span class="dim">-</span>',
       c.cooldownMsLeft > 0 ? '<span class="tag warn">冷却中</span>' : '<span class="tag ok">可用</span>'
     ])
-  ) : empty("没有发现凭据 —— 点右上角「换个账号登录」自己登一个（不需要 OfficeAce 桌面端）");
+  ) : empty("没有发现凭据 —— 点右上角「换个账号登录」自己登一个（要本机 OfficeAce 桌面端在跑）");
 }
 
 /* ---------------- 用量 ---------------- */
@@ -1714,7 +1715,7 @@ function creditOverview(elBig, elSay) {
 
   const lines = [];
   if (!items.length) {
-    lines.push("号池里还没有账号。到「号池」页点「换个账号登录」，用你自己的华为云账号登录一次就行（不需要装 OfficeAce 桌面端）。");
+    lines.push("号池里还没有账号。装好并登录一次 OfficeAce 桌面端（本机默认 127.0.0.1:3004），再到「号池」页点「换个账号登录」；或者直接「导入账号」贴一份现成的 baseUrl + Authorization。");
   } else if (!okOnes.length) {
     lines.push("还没读到积分。点右上角「刷新积分」试试；如果失败，多半是账号的临时凭据过期了，需要重新登录 OfficeAce。");
   } else {
@@ -1753,7 +1754,7 @@ function renderAccounts() {
   ].map(([k, v, s, c]) => card(k, v, s, c)).join("");
 
   if (!list.length) {
-    $("#acBody").innerHTML = empty("号池为空。点右上角「换个账号登录」自己登一个（不需要 OfficeAce 桌面端），或点「导入账号」。");
+    $("#acBody").innerHTML = empty("号池为空。点右上角「换个账号登录」自己登一个（要本机 OfficeAce 桌面端在跑），或点「导入账号」。");
     return;
   }
 
@@ -2016,7 +2017,7 @@ function renderCredits() {
 
   $("#crCards").innerHTML = items.length
     ? items.map(creditCard).join("")
-    : empty("号池里还没有账号。到「号池」页点「换个账号登录」（不需要装 OfficeAce 桌面端），或手工导入一份 baseUrl + authorization。");
+    : empty("号池里还没有账号。先装好并登录一次 OfficeAce 桌面端（自助登录要调它），再到「号池」页点「换个账号登录」；也可以手工导入一份 baseUrl + authorization。");
 
   // 近 30 天消耗
   const withUsage = items.filter((i) => i.ok && i.usage && i.usage.items && i.usage.items.length);
@@ -2357,7 +2358,12 @@ function bindAccountAuthEvents() {
   $("#acScan").addEventListener("click", async () => {
     try {
       const r = await api("admin/api/accounts/scan", { method: "POST", json: {} });
-      toast("扫描完成：" + r.accounts.length + " 个账号", "ok");
+      // 关掉本机扫描时不能装作"扫完了" —— 用户会以为号池坏了
+      if (r.discoverEnabled === false) {
+        toast("自动发现已关闭（config.json 里 discover.enabled=false）：这次只读了 data/ 里的号，没有扫本机", "err");
+      } else {
+        toast("扫描完成：" + r.accounts.length + " 个账号", "ok");
+      }
       await poll();
     } catch (e) { toast(e.message, "err"); }
   });
@@ -2764,8 +2770,14 @@ $("#btnRediscover").onclick = async () => {
   $("#opTip").textContent = "正在重新发现…";
   try {
     const r = await api("admin/api/refresh", { method: "POST", json: {} });
-    $("#opTip").textContent = "新增凭据 " + r.discovered + " 条，模型 " + r.models + " 个";
-    toast("已重新发现凭据", "ok"); await poll();
+    if (r.discoverEnabled === false) {
+      $("#opTip").textContent = "自动发现已关闭（discover.enabled=false），没有扫描本机";
+      toast("自动发现已关闭，这次没扫本机（要扫本机请在 config.json 里把 discover.enabled 打开）", "err");
+    } else {
+      $("#opTip").textContent = "新增凭据 " + r.discovered + " 条，模型 " + r.models + " 个";
+      toast("已重新发现凭据", "ok");
+    }
+    await poll();
   } catch (e) { $("#opTip").textContent = "失败: " + e.message; toast("失败: " + e.message, "err"); }
 };
 $("#btnUpstream").onclick = async () => {

@@ -586,8 +586,9 @@ export function createApp(ctx) {
       const cred = pool.pick(model);
       if (!cred) {
         return openAiError(
-          '凭据池为空：打开控制台「号池」页点「换个账号登录」即可（不需要 OfficeAce 桌面端）；' +
-          '也可以在 config.json 里手工填写 upstream.baseUrl / upstream.authorization',
+          '凭据池为空：先在号池页「换个账号登录」（要本机 OfficeAce 桌面端在跑），' +
+          '或「导入账号」贴一份 baseUrl + Authorization；' +
+          '也可以干脆把它当通用反代：在 config.json 里填 upstream.baseUrl / upstream.authorization',
           { status: 503, type: 'no_credential', code: 'no_credential' },
         );
       }
@@ -1156,6 +1157,11 @@ export function createApp(ctx) {
             config[key] = { ...config[key], ...patch[key] };
           }
         }
+        // `discover.enabled` 要立刻生效：扫盘每 45 秒跑一轮，晚一步就等于"刚关掉又被扫了一轮"。
+        if (patch.discover && typeof ctx.setMachineScanEnabled === 'function') {
+          ctx.setMachineScanEnabled(config.discover?.enabled !== false);
+          log.info('本机扫描开关已更新', { enabled: config.discover?.enabled !== false });
+        }
         // ⚠️ 别让配置接口把 API Key 列表写成空数组。
         //
         // `apiKeys: []` 在 checkAuth 里是「不校验」的意思，看着好像更宽松；
@@ -1270,7 +1276,12 @@ export function createApp(ctx) {
       if (pathname === '/admin/api/refresh' && req.method === 'POST') {
         const upstream = await refreshUpstreamCatalog();
         const discovered = ctx.requestRediscover('panel');
-        sendJson(res, 200, { upstream, discovered, models: registry.ids().length });
+        sendJson(res, 200, {
+          upstream,
+          discovered,
+          models: registry.ids().length,
+          discoverEnabled: ctx.isMachineScanEnabled ? ctx.isMachineScanEnabled() !== false : true,
+        });
         return;
       }
 
@@ -1342,6 +1353,9 @@ export function createApp(ctx) {
           ok: true,
           accounts,
           added,
+          // 扫描本机被 `discover.enabled: false` 关掉时，面板要能说清"扫了但是没扫本机"，
+          // 否则用户看到「0 个账号」会以为是坏了。
+          discoverEnabled: ctx.isMachineScanEnabled ? ctx.isMachineScanEnabled() !== false : true,
           status: ctx.accounts.status(),
           credits: ctx.credits ? ctx.credits.view() : null,
         });

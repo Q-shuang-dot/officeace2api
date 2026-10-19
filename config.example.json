@@ -18,6 +18,7 @@
     "retryBackoffMs": 1200
   },
   "discover": {
+    "enabled": true,
     "installDirs": []
   },
   "models": {

@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { createLogger } from './logger.mjs';
-import { listDirs, readJson, trimSlash, maskSecret, home, writeFileAtomic, lockDownFile } from './util.mjs';
+import { listDirs, readJson, trimSlash, maskSecret, home, writeFileAtomic, lockDownFile, isMachineScanEnabled } from './util.mjs';
 import { readProtectedText, dpapiStatus } from './dpapi.mjs';
 
 const log = createLogger('accounts');
@@ -150,6 +150,10 @@ function normalizeProfile(obj) {
 /* ------------------------------------------------------------ 安装根目录 */
 
 function installRoots(installDirs = []) {
+  // `config.discover.enabled: false` = 用户不想让本服务去碰这台机器上的 OfficeAce。
+  // 这里返回空列表，下面所有扫盘（routing_state、加密 OAuth 档案、users/<id>/model.json）
+  // 自然全部跳过；而 `data/oauth-accounts.json` 里自己登进来的账号不经过这里，照旧加载。
+  if (!isMachineScanEnabled()) return [];
   const out = new Set();
   for (const d of installDirs) if (d) out.add(path.resolve(d));
   if (process.env.OFFICEACE_INSTALL_DIR) out.add(path.resolve(process.env.OFFICEACE_INSTALL_DIR));
@@ -167,6 +171,9 @@ function installRoots(installDirs = []) {
 }
 
 function dataRoots(installDirs = []) {
+  // 同上：扫描本机被关掉时连 `~/.office-claw` 也不读（`OFFICEACE_HOME` 只是换位置，
+  // 不是开关——两回事）。要的是"账号来源完全由 data/ 和我手工加的说了算"。
+  if (!isMachineScanEnabled()) return [];
   const out = new Set([path.join(home(), '.office-claw')]);
   for (const r of installRoots(installDirs)) out.add(path.join(r, '.office-claw'));
   return [...out];

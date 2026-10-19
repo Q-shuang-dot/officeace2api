@@ -250,15 +250,18 @@ also has OfficeAce signed in, the two sets merge instead of duplicating.)
 
 ## 5. Is the OfficeAce client mandatory?
 
-**No.** Three scenarios:
+**If you want this service's accounts forwarded: yes. If you don't want to install it, use it as a
+generic proxy instead.** Four cases:
 
 | Your situation | Need the desktop client? | What to do |
 |---|---|---|
-| OfficeAce installed and signed in | No extra step | Works on startup, auto-discovered |
-| No OfficeAce, but you have a Huawei Cloud account | **Not needed** | Console → Import account → self-service sign-in (option A above) |
+| OfficeAce installed and signed in | Already have it | Works on startup, auto-discovered |
+| Installed but not signed in | Yes, and it must be running | Console → "sign in with another account" (it asks the local client for the authorize URL), or chat once in the client and restart this service |
+| Not installed, want to use a Huawei Cloud account | **You must install it** | Self-service sign-in calls the client's `/api/login/authorize`; without it you get "no local OfficeAce service found (default 127.0.0.1:3004)" |
+| Not installed, but you already have a `baseUrl` + `Authorization` | Not needed | Console → Import account, paste them |
 | Only proxying **another** OpenAI-compatible service | **Not needed**, no Huawei account either | Set `upstream.baseUrl` + `upstream.authorization` in `config.json` |
 
-The third case turns it into a generic OpenAI-compatible reverse proxy:
+The last case turns it into a generic OpenAI-compatible reverse proxy:
 
 ```json
 {
@@ -272,6 +275,24 @@ The third case turns it into a generic OpenAI-compatible reverse proxy:
 
 The Settings page in the console exposes the same two fields (manual upstream URL /
 manual auth header) — fill them in and save.
+
+### Don't want it scanning this machine? `discover.enabled`
+
+Defaults to `true`: on startup it scans `~\.office-claw`, `<drive>:\软件\OfficeAce\.office-claw`
+and similar locations, pulling the local OfficeAce accounts into the pool. If you only want the
+accounts you imported by hand (or a manual upstream), turn it off:
+
+```json
+{ "discover": { "enabled": false } }
+```
+
+After that, accounts can only come from three places: self-service sign-ins stored in `data\`,
+accounts imported in the console, and the manual `upstream`.
+
+> ⚠️ Don't confuse it with `upstream.autoDiscover: false`: that one only turns off the
+> **periodic re-scan every 45 seconds** — the startup scan still runs. So a "generic proxy" user
+> who happens to have OfficeAce installed will still get those accounts pulled into the pool.
+> They are two different switches; turn off both for a clean slate.
 
 ---
 
@@ -364,6 +385,10 @@ officeace2api/
   real CLIs: nothing is deleted below the limit / the bundle just written must survive (even with an
   identical mtime) / the oldest go first / `--check` writes nothing / no Explorer popup when not interactive /
   the real `data\` is untouched)
+- `node tools/test-discover-switch.mjs` — the "should we scan this machine" switch
+  (`discover.enabled`, 12 cases, both directions: with it on, an account planted in a fake home is
+  found / with it off, not a single account is read even though this machine really has some /
+  `/healthz` reports 0 accounts while the manual upstream still forwards / turning it back on works)
 - `node tools/test-max-tokens.mjs` — unit tests for the reasoning-budget rewrite rules (47 cases)
 - `node tools/test-model-probe.mjs` — unit tests for model availability probing (41 cases)
 - `node tools/stress-deep41.mjs` — large-scale load test: long sessions / long context / high

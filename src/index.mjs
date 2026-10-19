@@ -25,6 +25,7 @@ import { RegisterQueue } from './register.mjs';
 import { QuotaService } from './quota.mjs';
 import { backfillGatewayCredentials } from './gatewayKey.mjs';
 import { ModelProbe } from './modelProbe.mjs';
+import { setMachineScanEnabled, isMachineScanEnabled } from './util.mjs';
 
 const VERSION = '1.0.0';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +66,10 @@ if (args.help) {
 
 const config = loadConfig(args.config);
 if (args.port) config.listen.port = args.port;
+
+// 「要不要扫这台机器」的开关必须在**任何一次扫盘之前**装好 —— 下面 ensureAdminToken
+// 之后马上就要 scan() / runDiscovery('startup')，晚一步就会先读一遍本机账号。
+setMachineScanEnabled(config.discover?.enabled !== false);
 /*
  * 面板口令为空就补一个（并写回 config.json）。
  *
@@ -420,22 +425,25 @@ if (pool.size === 0) {
   /*
    * 零凭据时的引导。
    *
-   * ⚠️ 原文是「请先登录并运行一次 OfficeAce 桌面端（发起一次对话），再重启本服务」——
-   * 这对着**装了桌面端、只是还没登录**的人是对的，但对"拉了这个项目、根本没装
-   * OfficeAce"的人（也就是只想自己加个号的人）就成了死胡同：他照做也没得做。
+   * ⚠️ 这里改过一次，前后都留个记录：最早写的是「请先登录并运行一次 OfficeAce 桌面端」，
+   * 后来为了照顾"只想加个号的人"改成「面板自助登录不需要桌面端」——**后者是错的**：
+   * 面板那条路要调本机桌面端的 `/api/login/authorize` 拿授权链接（见 authflow.mjs 的
+   * start()），没装/没启动就报「没找到本机 OfficeAce 服务（默认 127.0.0.1:3004）」。
    *
-   * 必须把「面板里自助登录」摆在第一位 —— 那条路不需要桌面端，
-   * 只要一个华为云账号。桌面端那条降为备选，说清它还额外要求跑一次对话。
+   * 所以这里不许再说"不需要桌面端"，也不许把三条路混成两条：真实可选项是
+   * ① 装桌面端并登录（最简单）② 手工导入现成的 baseUrl+Authorization
+   * ③ 干脆不当这个用，改成通用 OpenAI 反代（填 upstream，连账号都不用）。
    */
-  log.warn('未发现任何凭据：打开控制台点「换个账号登录」即可（不需要 OfficeAce 桌面端）');
+  log.warn('未发现任何凭据：装好并登录一次 OfficeAce 桌面端，或手工导入一份 baseUrl + Authorization');
   console.log('');
   console.log('  ────────────────────────────────────────────────');
   console.log('  ⚠️  现在一个可用的号都没有，反代没法转发任何请求。');
-  console.log('     下一步（二选一）：');
-  console.log('       ① 打开控制台 → 「号池」页 → 点「换个账号登录」，用你自己的');
-  console.log('          华为云账号登录一次就行（不需要装 OfficeAce 桌面端）。');
-  console.log('       ② 或者如果你已经装过 OfficeAce：登录它、发一次对话，');
-  console.log('          然后重启本服务，会自动把凭据抠出来。');
+  console.log('     下一步（三选一）：');
+  console.log('       ① 装 OfficeAce 桌面端并登录一次（Windows 安装版/便携版都行）。');
+  console.log('          本服务会调它发起授权；它登录过并聊过一句之后重启本服务，也能自动抠凭据。');
+  console.log('       ② 你已经有 baseUrl + Authorization：控制台 →「号池」→「导入账号」贴进去。');
+  console.log('       ③ 只想把它当通用 OpenAI 反代：config.json 里填 upstream.baseUrl +');
+  console.log('          upstream.authorization，连账号都不需要。');
   if (config.admin?.token) {
     /*
      * 面板地址不能直接拿 `listen.host` 拼 —— 监听 `0.0.0.0` 时那个地址
@@ -477,6 +485,10 @@ const ctx = {
   version: VERSION,
   logFile: LOG_FILE,
   runDiscovery,
+  // 面板/配置接口改 `discover.enabled` 之后要立刻生效：扫盘是每 45 秒一次的后台动作，
+  // 不能让"刚关掉却发现已经被扫过一轮"这种事发生。
+  setMachineScanEnabled,
+  isMachineScanEnabled,
   requestRediscover(reason) {
     try {
       return runDiscovery(reason);

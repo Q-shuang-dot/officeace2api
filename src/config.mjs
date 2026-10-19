@@ -51,7 +51,17 @@ const DEFAULTS = {
     maxRetries: 3,
     retryBackoffMs: 1200,
   },
-  discover: { installDirs: [] },
+  discover: {
+    // 要不要去扫这台机器上的 OfficeAce（`~/.office-claw`、各盘安装目录、安装目录里的
+    // 加密 OAuth 档案）。默认开；关掉之后账号来源只剩：`data/` 里自己登进来的、
+    // 手工导入的、以及手工上游（`upstream.baseUrl`）。
+    //
+    // 它和 `upstream.autoDiscover` **不是一回事**：后者只关「定时重扫」，
+    // 启动扫描照跑 —— 这个区别坑过人（想当通用反代却被塞进本机账号），
+    // 也让测试无法隔离（临时实例会读到并可能替它们续期本机的真账号）。
+    enabled: true,
+    installDirs: [],
+  },
   models: {
     alias: {},
     hidden: [],
