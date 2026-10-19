@@ -14,7 +14,7 @@
 
 param(
     [switch]$Once,
-    [int]$Port = 7864
+    [int]$Port = 0
 )
 
 $ErrorActionPreference = 'Continue'
@@ -22,6 +22,25 @@ $Root = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $Root 'logs'
 if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Path $LogDir -Force | Out-Null }
 $WdLog = Join-Path $LogDir 'watchdog.log'
+
+# The port belongs to config.json (or OFFICEACE2API_PORT). A hard-coded 7864 here
+# meant that after someone moved the service the watchdog probed and cleared the
+# WRONG port - it would happily start a second server next to a healthy one.
+function Get-ListenPort {
+    $fromEnv = 0
+    if ($env:OFFICEACE2API_PORT) { [void][int]::TryParse($env:OFFICEACE2API_PORT, [ref]$fromEnv) }
+    if ($fromEnv -gt 0) { return $fromEnv }
+    $cfg = Join-Path $Root 'config.json'
+    if (Test-Path -LiteralPath $cfg) {
+        try {
+            $json = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($json.listen.port) { return [int]$json.listen.port }
+        } catch { }
+    }
+    return 7864
+}
+
+if ($Port -le 0) { $Port = Get-ListenPort }
 
 # --- single instance -------------------------------------------------------
 # Two watchdogs fight: each one's Clear-Port kills the other's server, forever.
@@ -43,21 +62,61 @@ function Write-Log {
     try { Add-Content -LiteralPath $WdLog -Value $line -Encoding UTF8 } catch { }
 }
 
+# Node must be >= 20. src\*.mjs uses `||=`, `??=`, `??` and friends; a v14 from PATH
+# dies with "SyntaxError: Unexpected token '||='" and exit code 1 in zero seconds --
+# which this loop then reads as "it crashed, restart it" and backs off forever.
+# That is exactly what happened on the machine this was written on: PATH had
+# v14.21.2 (nvm4w) while OfficeAce shipped v22, so the scheduled-task payload could
+# never start the server while tools\service.ps1 / find-node.cmd (both of which DO
+# version-check) started it fine. Same contract as Resolve-Node in service.ps1.
+function Test-NodeOk {
+    param([string]$Path)
+    if (-not $Path) { return $false }
+    if (-not (Test-Path -LiteralPath $Path)) { return $false }
+    try { $raw = (& $Path -v 2>$null) } catch { return $false }
+    if (-not $raw) { return $false }
+    $ver = (@($raw)[0].ToString().Trim()) -replace '^v', ''
+    $major = 0
+    if (-not [int]::TryParse(($ver -split '\.')[0], [ref]$major)) { return $false }
+    return ($major -ge 20)
+}
+
 function Resolve-NodePath {
+    # 1) value remembered by a previous run / tools\service.ps1 install
     $hint = Join-Path $Root 'data\node.txt'
     if (Test-Path -LiteralPath $hint) {
         $raw = ''
         try { $raw = [System.IO.File]::ReadAllText($hint, [System.Text.Encoding]::GetEncoding(936)).Trim() } catch { $raw = '' }
-        if ($raw -and (Test-Path -LiteralPath $raw)) { return $raw }
+        if (Test-NodeOk -Path $raw) { return $raw }
+        if ($raw) { Write-Log "data\node.txt points at an unusable node ($raw) - ignoring it" }
     }
+    # 2) the node bundled with OfficeAce. It is NOT always at <drive>\OfficeAce:
+    # on this machine it lives at <drive>\<folder>\OfficeAce\tools\node\node.exe.
+    # Probe the direct layout and one level down, same as tools\find-node.cmd.
     foreach ($d in @('C:\', 'D:\', 'E:\', 'F:\')) {
         if (-not (Test-Path -LiteralPath $d)) { continue }
-        $exe = Join-Path $d 'OfficeAce\tools\node\node.exe'
-        if (Test-Path -LiteralPath $exe) { return $exe }
+        $direct = Join-Path $d 'OfficeAce\tools\node\node.exe'
+        if (Test-NodeOk -Path $direct) { return $direct }
+        try {
+            foreach ($sub in @(Get-ChildItem -LiteralPath $d -Directory -ErrorAction SilentlyContinue)) {
+                $exe = Join-Path $sub.FullName 'OfficeAce\tools\node\node.exe'
+                if (Test-NodeOk -Path $exe) { return $exe }
+            }
+        } catch { }
     }
+    # 3) PATH, filtered by version. Never take the first hit blindly - that is the
+    #    bug this replaced.
     foreach ($c in (Get-Command node.exe -All -ErrorAction SilentlyContinue)) {
         $src = $c.Source; if (-not $src) { $src = $c.Path }
-        if ($src -and $src -notlike '*\dsh-desktop\*') { return $src }
+        if ($src -and $src -notlike '*\dsh-desktop\*' -and (Test-NodeOk -Path $src)) { return $src }
+    }
+    # 4) the usual install locations
+    foreach ($d in @($env:ProgramFiles, $env:LOCALAPPDATA)) {
+        if (-not $d) { continue }
+        $exe = Join-Path $d 'nodejs\node.exe'
+        if (Test-NodeOk -Path $exe) { return $exe }
+        $exe = Join-Path $d 'Programs\nodejs\node.exe'
+        if (Test-NodeOk -Path $exe) { return $exe }
     }
     return $null
 }
@@ -92,17 +151,33 @@ function Clear-Port {
     param([int]$LocalPort)
     try {
         $conns = Get-NetTCPConnection -LocalPort $LocalPort -State Listen -ErrorAction SilentlyContinue
-        if (-not $conns) { return }
-        if (Test-Serving -LocalPort $LocalPort) {
-            Write-Log "port $LocalPort is already serving a healthy instance - not touching it"
-            return
-        }
-        foreach ($c in $conns) {
-            Write-Log "port $LocalPort held by pid $($c.OwningProcess) and not answering - stopping it"
-            Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
-        }
-        Start-Sleep -Seconds 1
+        if (-not $conns) { return }   # nothing on the port -> nothing to spawn
     } catch { }
+
+    # tools\free-port.ps1 is now the single source of truth for "who holds this port
+    # and may we take it": it probes /healthz, refuses to touch a healthy instance,
+    # recognises Windows reserved port ranges (which look like a pid 4 listener and
+    # cannot be killed) and logs everything to logs\port-clean.log. Keeping one
+    # implementation means start.cmd, service.ps1 and this watchdog can never
+    # disagree about what "the port is busy" means.
+    #
+    # It MUST run as a CHILD process: the script ends with `exit`, and `exit`
+    # reached through `& script.ps1` would kill this watchdog too. The child's
+    # stdout is left alone (this may be a hidden task window); the full story is in
+    # logs\port-clean.log, so we only record the exit code here.
+    $freePort = Join-Path $PSScriptRoot 'free-port.ps1'
+    if (-not (Test-Path -LiteralPath $freePort)) {
+        Write-Log 'tools\free-port.ps1 is missing - falling back to no port cleanup'
+        return
+    }
+    $psExe = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+    try {
+        & $psExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $freePort -Port $LocalPort
+        Write-Log "free-port exit=$LASTEXITCODE on port $LocalPort"
+    } catch {
+        Write-Log "free-port failed: $($_.Exception.Message)"
+    }
 }
 
 $node = Resolve-NodePath

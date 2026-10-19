@@ -19,6 +19,19 @@ rem breaks the script. That is why every comment in these .cmd files is English.
 if exist "%~dp0data\admin-url.vars.cmd" call "%~dp0data\admin-url.vars.cmd"
 if not defined O2A_PORT set "O2A_PORT=7864"
 
+rem Free the port BEFORE starting anything. A stale holder makes node exit
+rem instantly with EADDRINUSE, and without this the only thing a user sees is the
+rem 30x2s health wait below ending in a bare "pause".
+rem tools\free-port.ps1 refuses to touch a HEALTHY instance, so running it while
+rem the service is already up is a no-op. exit 0 = port usable, else abort here.
+echo [*] checking port %O2A_PORT% ...
+set "PSH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PSH%" set "PSH=powershell"
+"%PSH%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0tools\free-port.ps1" -Port %O2A_PORT%
+rem 9009 = "powershell.exe not found". Do not block the start on a missing helper:
+rem free-port.ps1 is a convenience, node's own EADDRINUSE message is the fallback.
+if errorlevel 1 if not errorlevel 9009 goto portbusy
+
 set "USE_TASK=0"
 schtasks /query /tn "officeace2api" >nul 2>nul && set "USE_TASK=1"
 
@@ -67,6 +80,17 @@ echo   No account yet? Open the Admin panel above, go to the pool tab and
 echo   click "switch account login" - just sign in with your own account.
 echo.
 exit /b 0
+
+:portbusy
+echo.
+echo [!] port %O2A_PORT% is still not usable - see the message above.
+echo     Stopping here on purpose: with a busy port node exits immediately and you
+echo     would only watch a 60-second health-check timeout with no explanation.
+echo     Double-click free-port.cmd for the same check, or edit config.json
+echo     ("listen": {"port": ...}) to move the service somewhere else.
+echo.
+pause
+exit /b 1
 
 :nonode
 echo [X] Node.js 20+ not found.

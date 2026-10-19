@@ -12,6 +12,19 @@ if not defined NODE (
   exit /b 1
 )
 
+rem Clear the port before node starts. A stale holder (usually a previous instance
+rem that never exited cleanly) makes node die instantly with EADDRINUSE, and the
+rem caller only sees a failed health check. tools\free-port.ps1 resolves the port
+rem itself (env -> config.json -> 7864) and never touches a healthy instance.
+set "PSH=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PSH%" set "PSH=powershell"
+"%PSH%" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%~dp0tools\free-port.ps1"
+rem 9009 = "powershell.exe not found": a missing helper must not block the start.
+if errorlevel 1 if not errorlevel 9009 (
+  echo [X] the port is not usable - run free-port.cmd to see who holds it.
+  exit /b 1
+)
+
 rem stdout goes to console, the app writes logs\server.log itself;
 rem stderr is kept in case node dies before logging is initialised.
 rem

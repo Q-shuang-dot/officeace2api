@@ -16,7 +16,40 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $TaskName = 'officeace2api'
-$Port = 7864
+
+# The port is configurable (config.json listen.port, or OFFICEACE2API_PORT).
+# Hard-coding 7864 here made stop/start hit the wrong port as soon as someone moved
+# the service - start looked "fine" while it actually started on another port, and
+# stop killed whatever unrelated process happened to sit on 7864.
+function Get-ListenPort {
+    $fromEnv = 0
+    if ($env:OFFICEACE2API_PORT) { [void][int]::TryParse($env:OFFICEACE2API_PORT, [ref]$fromEnv) }
+    if ($fromEnv -gt 0) { return $fromEnv }
+    $cfg = Join-Path $Root 'config.json'
+    if (Test-Path -LiteralPath $cfg) {
+        try {
+            $json = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($json.listen.port) { return [int]$json.listen.port }
+        } catch { }
+    }
+    return 7864
+}
+
+# Clearing the port right before a start is the same job tools\free-port.ps1 does
+# for start.cmd / run-bg.cmd: probe /healthz, never touch a healthy instance, know
+# about Windows reserved port ranges, log to logs\port-clean.log.
+# It MUST run as a child process: the script ends with `exit`, and `exit` reached
+# through `& script.ps1` would take this script down with it.
+function Invoke-FreePort {
+    $freePort = Join-Path $PSScriptRoot 'free-port.ps1'
+    if (-not (Test-Path -LiteralPath $freePort)) { return $true }
+    $psExe = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $psExe)) { $psExe = 'powershell.exe' }
+    & $psExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $freePort -Port $Port
+    return ($LASTEXITCODE -eq 0)
+}
+
+$Port = Get-ListenPort
 $Url = "http://127.0.0.1:$Port/healthz"
 
 function Get-TaskInfo {
@@ -145,8 +178,12 @@ function Stop-Service {
     # Kill the watchdog by command line: Stop-ScheduledTask does not always take
     # the child node process with it (the watchdog spawns it with -NoNewWindow).
     try {
+        # Match the watchdog PAYLOAD shape (the script path is the tail of the
+        # command line), not any shell that merely mentions the file: the loose
+        # '*watchdog.ps1*' version also kills a terminal that is running something
+        # which spawns the watchdog. Same rule as Stop-StrayWatchdogs in free-port.ps1.
         Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe' OR Name = 'pwsh.exe'" -ErrorAction SilentlyContinue |
-            Where-Object { $_.CommandLine -and $_.CommandLine -like '*watchdog.ps1*' } |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match '[\\/]watchdog\.ps1"?\s*$' } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     } catch { }
     $pidFile = Join-Path $Root 'data\server.pid'
@@ -171,6 +208,12 @@ function Start-Service {
         Install-Task -AtLogon:$false -Node $node
     }
     Stop-Service
+    # Only start once the port is actually usable. Otherwise node dies on
+    # EADDRINUSE and the caller waits 30 s for a health check that can never pass.
+    if (-not (Invoke-FreePort)) {
+        Write-Host '[X] the port is not usable - not starting; see the message above' -ForegroundColor Red
+        return $null
+    }
     Start-ScheduledTask -TaskName $TaskName
     return (Wait-Health -Seconds 30)
 }
