@@ -349,7 +349,7 @@ officeace2api/
 - `node tools/test-logger.mjs` —— 日志落盘与滚动（9 项：留 3 代历史 / 本机时间列 vs
   UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
-- `node tools/test-account-bundle.mjs` —— 账号搬运包（70 项，全在临时目录里跑：加密往返 /
+- `node tools/test-account-bundle.mjs` —— 账号搬运包（76 项，全在临时目录里跑：加密往返 /
   口令错与篡改都必须失败 / 过期凭据被丢掉 / 死名单并集 / 「本机有活链就不被覆盖」/
   「导回原机器不长出假身份」/ 老的 `oauth-accounts.json` 也能导 / 备份只留最新 3 份）
 - `node tools/test-backup-prune.mjs` —— 搬运包与导入备份的清理（30 项，真跑两个 CLI：

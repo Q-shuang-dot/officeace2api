@@ -99,7 +99,7 @@ node src/index.mjs
 | `node tools/test-max-tokens.mjs` | 推理预算改写规则（47 项单元测试） |
 | `node tools/test-model-probe.mjs` | 模型可用性探测（41 项单元测试） |
 | `node tools/test-free-port.mjs` | 启动前的端口清理（8 项，真起进程：死占用要清、健康实例不许动、保留端口范围要解释） |
-| `node tools/test-account-bundle.mjs` | 换电脑的账号搬运包（70 项，临时目录里跑：加密往返 / 口令错与篡改必须失败 / 续期链合并规则 / 导回原机器不产生假身份 / 备份只留最新 3 份） |
+| `node tools/test-account-bundle.mjs` | 换电脑的账号搬运包（76 项，临时目录里跑：加密往返 / 口令错与篡改必须失败 / 续期链合并规则 / 导回原机器不产生假身份 / 备份只留最新 3 份） |
 | `node tools/test-backup-prune.mjs` | 搬运包与导入备份的清理（30 项，真跑两个 CLI：不许为了"干净"先清一遍、刚写的那份必须保住、删的是最老的、`--check` 一个字节不写） |
 | `node tools/diag-fresh-clone.mjs` | 用 `git ls-files` 精确模拟一次 `git clone`，在空目录里起服务 |
 | `node tools/diag-admin-auth.mjs` | 面板鉴权（无口令 / 对口令 / 错口令 / `?token=`） |

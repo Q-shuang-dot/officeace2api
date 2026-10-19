@@ -88,6 +88,9 @@ function pickRefresh(refreshDoc, accountId, fullId) {
     // 否则新机器会把一份早就被服务器拒过的 token 再发一次。
     deadTokens: Array.isArray(rec.deadTokens) ? rec.deadTokens.slice(-40) : [],
     consumed: Array.isArray(rec.consumed) ? rec.consumed.slice(-40) : [],
+    // 这条链是不是已经判死了（服务器拒过、只能重新登录）。
+    // 导出的取舍要用到它：档案里那份死了、扫盘却有份活的，就该带上活的那份。
+    broken: rec.broken === true,
     refreshExpiresAt: Number(rec.refreshExpiresAt) || 0,
     userName: rec.userName || '',
     count: Number(rec.count) || 0,
@@ -147,6 +150,33 @@ export function collectAccounts({ accounts = [], oauthDoc = {}, refreshDoc = {},
       const e = out.get(acc.id);
       if (!e.label) e.label = labels[acc.id] || acc.label || '';
       e.disabled = e.disabled || disabled.has(acc.id);
+      // 但 `refresh_token` 有一条例外：档案里那份**已经作废**、而扫盘（OfficeAce 自己的
+      // 存储）手里还有一份我们从没见过、也没作废过的 —— 就用它的。
+      //
+      // 为什么会这样：OfficeAce 客户端和本服务会抢同一条链（一次性 token，谁先用谁赢）。
+      // 客户端赢了之后，它自己那份是活的，我们档案里那份进了黑名单。
+      // 这时候导出如果照抄档案，包到新机器上必然续不上 —— 用户白重登一次，而这正是
+      // 「换电脑」要消灭的事。实测踩到过：某个号的档案 token 已 1806 作废，
+      // profile 里那份却是好的，导出的包会带着死的那条。
+      const live = String(acc.profile?.refreshToken || '');
+      if (e.refreshToken && live && live !== e.refreshToken) {
+        const r = e.refresh || {};
+        const bad = new Set([...(r.deadTokens || []), ...(r.consumed || [])]);
+        const ours = new Set([r.diskTokenUsed, r.rotatedToken].filter(Boolean));
+        // **只在本机这条链彻底没救时**才换，两个前提缺一不可：
+        //   ① broken === true 且手里没有下一份（rotatedToken）—— 自己还能续，就别去动客户的链；
+        //   ② 扫盘那份既不在死名单、也不是我们用过的（否则换过去照样 1806）。
+        // 收紧到这里是因为放宽版会误伤："档案 token 虽然在 consumed 里，但我们手里还有
+        // 一份没用的 rotatedToken"，这时候它本来就能续，换客户端的 token 反而会去烧客户端的链。
+        const hopeLost = r.broken === true && !r.rotatedToken && !ours.has(live);
+        const archiveUnusable = bad.has(e.refreshToken) || r.broken === true;
+        if (hopeLost && archiveUnusable && !bad.has(live)) {
+          e.refreshToken = live;
+          e.refreshTokenFrom = 'profile'; // 排查用：这条是从扫盘那份捡回来的
+          if (!e.dpopPrivateJwk) e.dpopPrivateJwk = acc.profile?.raw?.dpop?.privateJwk || null;
+          if (!e.dpopPublicJwk) e.dpopPublicJwk = acc.profile?.raw?.dpop?.publicJwk || null;
+        }
+      }
       continue;
     }
     const cred = (acc.credentials || []).find((c) => c && c.authorization && c.baseUrl);

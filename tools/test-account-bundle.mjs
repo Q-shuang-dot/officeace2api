@@ -199,6 +199,72 @@ eq('收集到 2 个可搬的号（B 没有 refresh_token 但仍有长期 Basic �
   eq('摘要：renewable 的判据是 token+DPoP 两样都在', s.renewable, 1);
 }
 
+/* ------------------------ 1b. 档案里的 refresh_token 死了，扫盘那份还活着吗 */
+
+{
+  // 真实踩到的场景：OfficeAce 客户端和服务抢同一条一次性链，客户端赢了，
+  // 我们档案里那份进了黑名单（STS5.1806）。这时候导出如果照抄档案，
+  // 包搬到新机器上必然续不上 —— 用户白重登一次，正是「换电脑」要消灭的事。
+  const acctId = ACC_A.split(':')[0];
+  const archiveDead = TOK('ARCHIVE_DEAD');
+  const profileLive = TOK('PROFILE_LIVE');
+  const base = {
+    oauthDoc: {
+      [ACC_A]: {
+        accountId: acctId,
+        userId: ACC_A.split(':')[1],
+        userName: 'u',
+        baseUrl: 'https://gw.example.com/v2',
+        authorization: 'Basic aaa',
+        refreshToken: archiveDead,
+        dpopPrivateJwk: { kty: 'EC', crv: 'P-256' },
+        dpopPublicJwk: null,
+        credential: null,
+      },
+    },
+    accounts: [
+      {
+        id: ACC_A,
+        label: 'A',
+        credentials: [{ baseUrl: 'https://gw.example.com/v2', authorization: 'Basic aaa' }],
+        profile: { accountId: acctId, refreshToken: profileLive },
+      },
+    ],
+    meta: { labels: {}, disabled: [] },
+    now: NOW,
+  };
+
+  // ① 链判死、手里没有下一份、扫盘那份我们没见过 → 用扫盘那份
+  const r1 = collectAccounts({
+    ...base,
+    refreshDoc: { [acctId]: { diskTokenUsed: archiveDead, rotatedToken: '', deadTokens: [], consumed: [archiveDead], broken: true } },
+  });
+  eq('链死了＋扫盘有份活的 → 导出带上扫盘那份', r1[0].refreshToken, profileLive);
+  eq('……并留个来路标记（排查时能看出不是档案里的）', r1[0].refreshTokenFrom, 'profile');
+
+  // ② 手里还有一份没用的下一份 → 本来就能续，别去动客户端的链
+  const r2 = collectAccounts({
+    ...base,
+    refreshDoc: { [acctId]: { diskTokenUsed: archiveDead, rotatedToken: TOK('ROTATED_OK'), deadTokens: [], consumed: [archiveDead], broken: true } },
+  });
+  eq('手里还有下一份（能续）→ 保持档案那份，不去烧客户端的链', r2[0].refreshToken, archiveDead);
+
+  // ③ 扫盘那份也在死名单里 → 换过去照样 1806，不换
+  const r3 = collectAccounts({
+    ...base,
+    refreshDoc: { [acctId]: { diskTokenUsed: archiveDead, rotatedToken: '', deadTokens: [profileLive], consumed: [archiveDead], broken: true } },
+  });
+  eq('扫盘那份已被服务器拒过 → 不拿它去导出', r3[0].refreshToken, archiveDead);
+
+  // ④ 链没判死 → 一律不动（哪怕档案 token 在 consumed 里）
+  const r4 = collectAccounts({
+    ...base,
+    refreshDoc: { [acctId]: { diskTokenUsed: archiveDead, rotatedToken: '', deadTokens: [], consumed: [archiveDead], broken: false } },
+  });
+  eq('链没判死 → 不动档案里的 token', r4[0].refreshToken, archiveDead);
+  eq('没动用时不留来路标记', r4[0].refreshTokenFrom, undefined);
+}
+
 /* ------------------------------------------------------- 2. 打包 + 解析 */
 
 const plain = buildBundle({ accounts: collected, host: 'OLDPC', user: 'shuang', now: NOW }, {});
