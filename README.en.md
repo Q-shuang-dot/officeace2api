@@ -6,9 +6,11 @@ Turn a model gateway into a full **OpenAI-compatible API** with a built-in web c
 
 **Zero dependencies** — Node.js built-in modules only. No `npm install` needed.
 
-> ⚠️ **Prerequisite**: The **OfficeAce desktop client** must be installed and signed in.
-> This project is a companion service to that client and reads its credential files.
-> **Without the desktop client, account authorization fails.**
+> 💡 **Accounts**: you can sign in from the console and the account enters the pool on its own —
+> no desktop client required (`src/oauth.mjs` does the whole PKCE + cloud-callback + DPoP flow).
+> Having the **OfficeAce desktop client** installed just makes it more convenient: the service then
+> also auto-discovers the accounts already signed in on this machine, and the older
+> "one-click authorization" entry works.
 
 ![Console](docs/panel-accounts.png)
 
@@ -114,22 +116,23 @@ Double-click **`start.cmd`** (temporary start; closing the window does not kill 
 - **Client not installed**: the pool is empty and **the proxy cannot forward any request**.
   Use one of the three options below.
 
-**Option A — reuse an already signed-in OfficeAce client (recommended)**
+**Option A — self-service sign-in in the console (recommended, no client needed)**
 
-> ⚠️ **The OfficeAce desktop client must be installed.** Without it, "sign in with another
-> account" in the console fails with an authorization error.
+Open the console → **Account pool** → click **"Sign in with another account"** → sign in in the
+browser. The account enters the pool and renews itself. This whole chain is implemented here:
+build the authorize URL (PKCE) → Huawei Cloud callback → poll the cloud for the code → DPoP-signed
+token exchange (`src/oauth.mjs`). **It never talks to the desktop client.**
+
+**Option B — reuse an already signed-in OfficeAce client**
+
+> This one needs the client installed (search "OfficeAce", or get it from the Huawei AppGallery).
 
 Sign in to the client, send one message, then double-click `stop.cmd` followed by
 `start.cmd` — the service extracts the credentials automatically.
 
-**Option B — sign in a new account through the console**
-
-If the client is installed but the service did not discover any account:
-
-Open the console → **Account pool** → click **"Sign in with another account"** → sign in
-with your own account in the browser.
-
-> 💡 This flow requires a running OfficeAce desktop client to handle the OAuth callback.
+> 💡 The console also has an older "one-click authorization" entry (`/admin/api/auth/*`), and the
+> registration pipeline's auto-authorization reuses it — those ask the **local desktop client** for
+> the authorize URL, so they need it. Option A is enough on its own.
 
 **Option C — manual import (fallback)**
 
@@ -250,14 +253,15 @@ also has OfficeAce signed in, the two sets merge instead of duplicating.)
 
 ## 5. Is the OfficeAce client mandatory?
 
-**If you want this service's accounts forwarded: yes. If you don't want to install it, use it as a
-generic proxy instead.** Four cases:
+**Not for adding accounts.** Only two things need it: auto-extracting the credentials of accounts
+already signed in on this machine, and the older "one-click authorization" entry
+(`/admin/api/auth/*`, which the registration pipeline reuses).
 
 | Your situation | Need the desktop client? | What to do |
 |---|---|---|
-| OfficeAce installed and signed in | Already have it | Works on startup, auto-discovered |
-| Installed but not signed in | Yes, and it must be running | Console → "sign in with another account" (it asks the local client for the authorize URL), or chat once in the client and restart this service |
-| Not installed, want to use a Huawei Cloud account | **You must install it** | Self-service sign-in calls the client's `/api/login/authorize`; without it you get "no local OfficeAce service found (default 127.0.0.1:3004)" |
+| Just want to add your own account (sign in once in a browser) | **Not needed** | Console → "sign in with another account" (Option A) |
+| Client installed and signed in | Nice to have | Works on startup, auto-discovered, nothing to add |
+| Want the registration pipeline to auto-authorize | Currently yes (that path uses one-click authorization) | Install the client, or sign in with Option A afterwards |
 | Not installed, but you already have a `baseUrl` + `Authorization` | Not needed | Console → Import account, paste them |
 | Only proxying **another** OpenAI-compatible service | **Not needed**, no Huawei account either | Set `upstream.baseUrl` + `upstream.authorization` in `config.json` |
 

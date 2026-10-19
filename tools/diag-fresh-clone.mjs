@@ -188,10 +188,11 @@ try {  // git archive 输出 tar，再解开 —— Windows 上 git 自带 tar �
 
     /* ── 5. 加号入口在不在（这才是新用户真正要做的事）─────────────── */
 
-    // ⚠️ 这条**不是**"不用装桌面端"：`/admin/api/login/start` 是去问本机桌面端
-    //（默认 127.0.0.1:3004）要授权链接的，桌面端没装/没启动就会失败。
-    // 早先这里标成"不用装"，把人带沟里过（详见 README 第五章）。
-    console.log('\n【5】「自己加自己的号」这条路通不通（要本机 OfficeAce 桌面端在跑）');
+    // 这条**确实**「不用装桌面端」：`/admin/api/login/start` 走的是 src/oauth.mjs 的
+    // LoginFlow，它自己拼授权链接（PKCE）+ 轮询云端取 code + DPoP 换 token。
+    // 需要本机桌面端的是另一条路 `authflow.mjs`（`/admin/api/auth/*`，注册流水线在用），
+    // 别把两者搞混 —— 这两条我在文档里写反过一次。
+    console.log('\n【5】「自己加自己的号」这条路通不通（不用装 OfficeAce 桌面端）');
     const cfg = JSON.parse(readFileSync(path.join(dir, 'config.json'), 'utf8'));
     const T = cfg.admin.token;
 
@@ -202,7 +203,7 @@ try {  // git archive 输出 tar，再解开 —— Windows 上 git 自带 tar �
     });
     const sess = await loginStart.json().catch(() => null);
     if (loginStart.status === 200 && sess?.url) {
-      ok('能取到"换个账号登录"的链接（本机桌面端在跑，链接是它给的）');
+      ok('能取到"换个账号登录"的链接（本服务自己拼的，不需要桌面端）');
       const host = (() => { try { return new URL(sess.url).host; } catch { return '?'; } })();
       note(`登录域名 ${host}`);
       note(`回调地址 ${sess.redirectUri || sess.callback || '（未在响应里给出）'}`);
@@ -215,7 +216,7 @@ try {  // git archive 输出 tar，再解开 —— Windows 上 git 自带 tar �
       }).catch(() => {});
       ok('能取消这个登录会话（不留垃圾）');
     } else {
-      bad('取不到登录链接（多半是本机 OfficeAce 桌面端没在跑：127.0.0.1:3004 不通就这样）', `HTTP ${loginStart.status} ${JSON.stringify(sess).slice(0, 200)}`);
+      bad('取不到登录链接（本服务自己拼链接这条路断了，看 src/oauth.mjs 的 start/buildAuthorizeUrl）', `HTTP ${loginStart.status} ${JSON.stringify(sess).slice(0, 200)}`);
     }
 
     // 有没有"手工导入"这条退路（用户自己已经有 baseUrl + authorization 时）

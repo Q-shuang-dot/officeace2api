@@ -425,24 +425,27 @@ if (pool.size === 0) {
   /*
    * 零凭据时的引导。
    *
-   * ⚠️ 这里改过一次，前后都留个记录：最早写的是「请先登录并运行一次 OfficeAce 桌面端」，
-   * 后来为了照顾"只想加个号的人"改成「面板自助登录不需要桌面端」——**后者是错的**：
-   * 面板那条路要调本机桌面端的 `/api/login/authorize` 拿授权链接（见 authflow.mjs 的
-   * start()），没装/没启动就报「没找到本机 OfficeAce 服务（默认 127.0.0.1:3004）」。
+   * ⚠️ 这段文字改过三次，把弯路记下来，免得第四次又写反：
+   *   1. 最早写「请先登录并运行一次 OfficeAce 桌面端」—— 对没装桌面端的人是死胡同；
+   *   2. 后来改成「面板自助登录不需要桌面端」，这句其实**是对的**（登录走 src/oauth.mjs：
+   *      自己拼授权链接 + 轮询云端取 code + DPoP 换 token，全程不碰桌面端）；
+   *   3. 中间我自己把它改错了一次，以为自助登录要调桌面端 —— 那是 `authflow.mjs`
+   *      那条老的「一键授权」路（注册流水线在用），和面板按钮不是一回事。
    *
-   * 所以这里不许再说"不需要桌面端"，也不许把三条路混成两条：真实可选项是
-   * ① 装桌面端并登录（最简单）② 手工导入现成的 baseUrl+Authorization
-   * ③ 干脆不当这个用，改成通用 OpenAI 反代（填 upstream，连账号都不用）。
+   * 所以现在的顺序是：先推「不依赖任何桌面端」的自助登录，再提桌面端（能自动抠号），
+   * 最后才是手工导入和「干脆当通用反代」。
    */
-  log.warn('未发现任何凭据：装好并登录一次 OfficeAce 桌面端，或手工导入一份 baseUrl + Authorization');
+  log.warn('未发现任何凭据：打开控制台点「换个账号登录」即可（不需要装 OfficeAce 桌面端）');
   console.log('');
   console.log('  ────────────────────────────────────────────────');
   console.log('  ⚠️  现在一个可用的号都没有，反代没法转发任何请求。');
-  console.log('     下一步（三选一）：');
-  console.log('       ① 装 OfficeAce 桌面端并登录一次（Windows 安装版/便携版都行）。');
-  console.log('          本服务会调它发起授权；它登录过并聊过一句之后重启本服务，也能自动抠凭据。');
-  console.log('       ② 你已经有 baseUrl + Authorization：控制台 →「号池」→「导入账号」贴进去。');
-  console.log('       ③ 只想把它当通用 OpenAI 反代：config.json 里填 upstream.baseUrl +');
+  console.log('     下一步（任选一条）：');
+  console.log('       ① 打开控制台 →「号池」页 → 点「换个账号登录」，用你自己的');
+  console.log('          账号登录一次就行（不需要装 OfficeAce 桌面端）。');
+  console.log('       ② 已经装过 OfficeAce：登录它、发一次对话，再重启本服务，');
+  console.log('          会自动把凭据抠出来。');
+  console.log('       ③ 你已经有 baseUrl + Authorization：控制台 →「号池」→「导入账号」贴进去。');
+  console.log('       ④ 只想把它当通用 OpenAI 反代：config.json 里填 upstream.baseUrl +');
   console.log('          upstream.authorization，连账号都不需要。');
   if (config.admin?.token) {
     /*

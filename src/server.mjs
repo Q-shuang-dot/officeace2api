@@ -586,9 +586,8 @@ export function createApp(ctx) {
       const cred = pool.pick(model);
       if (!cred) {
         return openAiError(
-          '凭据池为空：先在号池页「换个账号登录」（要本机 OfficeAce 桌面端在跑），' +
-          '或「导入账号」贴一份 baseUrl + Authorization；' +
-          '也可以干脆把它当通用反代：在 config.json 里填 upstream.baseUrl / upstream.authorization',
+          '凭据池为空：打开控制台「号池」页点「换个账号登录」即可（不需要 OfficeAce 桌面端）；' +
+          '也可以「导入账号」贴一份 baseUrl + Authorization，或在 config.json 里手工填 upstream.baseUrl / upstream.authorization',
           { status: 503, type: 'no_credential', code: 'no_credential' },
         );
       }
