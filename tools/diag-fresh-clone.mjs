@@ -93,7 +93,7 @@ try {  // git archive 输出 tar，再解开 —— Windows 上 git 自带 tar �
    * 那样测出来的"能跑"是蹭了我自己的号，对新用户毫无参考价值。
    *
    * ⚠️ 有个位子沙箱不掉：`discover.mjs` 还会硬扫
-   *    `C:\软件\OfficeAce\.office-claw`、`D:\软件\OfficeAce\.office-claw`、
+   *    `<系统盘>\软件\OfficeAce\.office-claw`、`<安装盘>\OfficeAce\.office-claw`、
    *    `Program Files\...` 这些固定位置（那些路径是写死在代码里的）。
    *    所以在这台装了 OfficeAce 的机器上，**没法完全模拟"什么都没装"** ——
    *    那部分只能靠下面「零凭据时的行为」那几条间接看。

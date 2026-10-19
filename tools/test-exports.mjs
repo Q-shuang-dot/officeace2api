@@ -23,7 +23,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // 用 fileURLToPath 而不是 new URL(...).pathname：后者不做百分号解码，
-// 项目路径里有中文（D:\个人项目\...）时会被编码成 %E4%B8%AA... 然后 ENOENT
+// 项目路径里有中文（<带中文的目录>\...）时会被编码成 %E4%B8%AA... 然后 ENOENT
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'src');
 const TOOLS = path.join(ROOT, 'tools');
