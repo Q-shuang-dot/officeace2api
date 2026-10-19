@@ -2044,6 +2044,13 @@ export function createApp(ctx) {
         const degraded = !credsOk || (ast.enabled > 0 && usableAccounts === 0);
         sendJson(res, 200, {
           status: degraded ? 'degraded' : 'ok',
+          /*
+           * 版本号（来自 package.json）。
+           *
+           * 放在 /healthz 里，是为了让"报问题时先确认你跑的是哪版"变成一次 curl 就能回答的事
+           * —— 面板底部虽然也显示，但那要先打得开面板、还得找到。
+           */
+          version: ctx.version,
           // 池子里真正能被调度去转发的凭据条数（这才是"能用几个号"）
           credentials: pool.size,
           models: registry.ids().length,

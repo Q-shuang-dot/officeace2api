@@ -512,6 +512,21 @@ console.log('\n[刷新与统计]');
   } else {
     bad('GET /healthz 带积分', JSON.stringify(h.json));
   }
+
+  /*
+   * 版本号只有一个来源（package.json），`healthz` / 面板必须读到同一个值。
+   *
+   * 以前 `src/index.mjs` 里写死一份、package.json 里又一份，发版时忘改一处就会出现
+   * 「面板显示 1.1.0、package.json 还是 1.0.0」—— 而版本号恰恰是报问题时最先要确认的东西。
+   * 这条断言就是防它再分叉。
+   */
+  const fs = await import('node:fs');
+  const pkgVersion = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  if (h.json?.version && h.json.version === pkgVersion) {
+    ok('/healthz 的版本号与 package.json 一致', `${h.json.version}`);
+  } else {
+    bad('版本号分叉了', `healthz=${h.json?.version} package.json=${pkgVersion}`);
+  }
 }
 
 {

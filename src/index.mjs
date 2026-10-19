@@ -27,7 +27,25 @@ import { backfillGatewayCredentials } from './gatewayKey.mjs';
 import { ModelProbe } from './modelProbe.mjs';
 import { setMachineScanEnabled, isMachineScanEnabled } from './util.mjs';
 
-const VERSION = '1.0.0';
+/*
+ * 版本号只认同一个来源：`package.json` 的 `version`。
+ *
+ * 原来这里是写死的 `const VERSION = '1.0.0'`，而 package.json 里另有一份 —— 两处都得改，
+ * 忘一处就出现「面板显示 1.1.0、package.json 还是 1.0.0」这种对不上的情况，
+ * 而版本号恰恰是用户报问题时最先要确认的东西。
+ *
+ * 用 readFileSync 而不是 `import ... with { type: 'json' }`：后者在 Node 20 上会打实验性
+ * 警告，而这个项目承诺「Node >= 20 直接跑」。
+ */
+const VERSION = (() => {
+  const pkgUrl = new URL('../package.json', import.meta.url);
+  try {
+    return JSON.parse(fs.readFileSync(pkgUrl, 'utf8')).version || '0.0.0';
+  } catch {
+    // 读不到就别让服务起不来，但要让日志里看得出来是"没读到"
+    return '0.0.0-unknown';
+  }
+})();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
