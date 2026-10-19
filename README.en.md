@@ -1,5 +1,7 @@
 # officeace2api
 
+> Published and discussed in the [LINUX DO](https://linux.do) community.
+
 Turn a model gateway into a full **OpenAI-compatible API** with a built-in web console.
 
 **Zero dependencies** — Node.js built-in modules only. No `npm install` needed.
