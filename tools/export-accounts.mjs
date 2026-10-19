@@ -5,6 +5,8 @@
  *   node tools/export-accounts.mjs                    # 导出到 accounts-backup\（不加密）
  *   node tools/export-accounts.mjs --pass 我的口令     # 导出并加密（推荐）
  *   node tools/export-accounts.mjs --out D:\a.json --plain
+ *   node tools/export-accounts.mjs --pass 口令 --prune # 顺手删掉目录里的旧搬运包（留最新 3 份）
+ *   node tools/export-accounts.mjs --no-open           # 别弹资源管理器（脚本/计划任务里用）
  *
  * 服务在跑的时候走管理接口（用的是它内存里那份最新状态），服务没跑就直接读盘 ——
  * 两条路结果一样，选哪条只看服务在不在。这样"换电脑"时不需要先把服务起起来。
@@ -31,7 +33,7 @@ import {
   PLAINTEXT_WARNING,
   summarizeAccounts,
 } from '../src/bundle.mjs';
-import { lockDownFile, writeFileAtomic } from '../src/util.mjs';
+import { lockDownFile, pickStaleEntries, shouldRevealInExplorer, writeFileAtomic } from '../src/util.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
@@ -205,12 +207,62 @@ if (!pass) {
 console.log(`[!] ${ONE_TIME_TOKEN_WARNING}`);
 console.log('');
 console.log('下一步：把这个文件拷到新电脑，双击 import-accounts.cmd（或直接把文件拖到它上面）。');
-if (flag('--open') || process.platform === 'win32') {
-  // 顺手在资源管理器里选中它，省得自己找路径（失败也无所谓）
+
+// 旧搬运包同样是凭据（明文或加密），攒着没人清。默认只**列出来**提醒，
+// 删不删由用户决定；加 --prune 才动手（留最新 3 份，含刚写的这个）。
+const outDirName = path.dirname(outFile);
+let siblings = [];
+try {
+  siblings = fs
+    .readdirSync(outDirName, { withFileTypes: true })
+    .filter((d) => d.isFile() && /\.json$/i.test(d.name))
+    .map((d) => {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(path.join(outDirName, d.name)).mtimeMs;
+      } catch {
+        /* 读不到就当最老 */
+      }
+      return { name: d.name, mtimeMs };
+    });
+} catch {
+  /* 目录读不了就算了，不影响导出 */
+}
+const oldBundles = pickStaleEntries(siblings, 3);
+if (oldBundles.length) {
+  console.log('');
+  console.log(`[i] 这个目录里还有 ${oldBundles.length} 个旧搬运包（里面就是凭据）：`);
+  for (const name of oldBundles) console.log(`      ${name}`);
+  if (flag('--prune')) {
+    let gone = 0;
+    for (const name of oldBundles) {
+      try {
+        fs.rmSync(path.join(outDirName, name), { force: true });
+        gone += 1;
+      } catch (err) {
+        console.log(`      [!] ${name} 没删掉：${err.message}`);
+      }
+    }
+    console.log(`    已删除 ${gone} 个（保留最新 3 份）。`);
+  } else {
+    console.log('    旧包在新电脑上导完之后就没用了 —— 加 --prune 重跑可顺手删掉，或自己删。');
+  }
+}
+// 替双击的用户把刚导出的文件在资源管理器里选中，省得自己找路径。
+// 但只在**有人看着**的时候弹（stdout 是终端）—— 脚本/计划任务/测试里弹出来没人管，
+// 而且自动化场景那个目录常常马上就被删掉，资源管理器会甩一个「位置不可用」的报错框，
+// 看起来像程序坏了。要强制看：--open；要强制不听：--no-open 或 O2A_NO_OPEN=1。
+if (
+  shouldRevealInExplorer({
+    explicitOpen: flag('--open'),
+    explicitNo: flag('--no-open'),
+    isTTY: !!process.stdout.isTTY,
+  })
+) {
   try {
     const { spawn } = await import('node:child_process');
     spawn('explorer.exe', ['/select,', outFile], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
   } catch {
-    /* 无所谓 */
+    /* 无所谓：打不开资源管理器不影响导出 */
   }
 }

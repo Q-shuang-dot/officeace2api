@@ -33,6 +33,7 @@ import {
 } from '../src/bundle.mjs';
 import { AccountStore } from '../src/accounts.mjs';
 import { RefreshState } from '../src/refresh.mjs';
+import { pickStaleEntries } from '../src/util.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -450,6 +451,36 @@ eq('空机器导入：全部 action=added', emptyMerge.results.map((r) => r.acti
   throws('更新版本的包 → 提示升级，而不是乱解析', () => parseBundle(JSON.stringify({ ...plain, version: 99 })), '更新版本');
   const res = mergeBundle({ accounts: [{ id: '', authorization: '', baseUrl: '' }] }, {});
   eq('残缺条目被跳过（不是静默丢弃）', res.results[0].action, 'skipped');
+}
+
+// —— 备份/搬运包不会无限堆积（src/util.mjs 的 pickStaleEntries）——
+// 导入前的 data/import-backup-<时间>/ 和导出目录里的旧包，里面都是**含凭据的副本**。
+// 留着没人清，就等于同一个号在盘上多躺几份；这里钉住"只留最新 N 份"的取舍逻辑。
+{
+  console.log('');
+  const mk = (name, mtimeMs) => ({ name, mtimeMs });
+  const five = [
+    mk('import-backup-20261001120000', 1000),
+    mk('import-backup-20261005120000', 5000),
+    mk('import-backup-20261010120000', 9000),
+    mk('import-backup-20261015120000', 15000),
+    mk('import-backup-20261020120000', 20000),
+  ];
+  eq(
+    '留最新 3 份 → 删最老的两份，且按"最老在前"给（打印出来好读）',
+    pickStaleEntries(five, 3),
+    ['import-backup-20261001120000', 'import-backup-20261005120000'],
+  );
+  eq('份数没超上限 → 一个都不删', pickStaleEntries(five.slice(0, 3), 3), []);
+  eq('keep=0 → 全删（最老在前）', pickStaleEntries(five.slice(0, 2), 0).length, 2);
+  // 同秒内连着导两次（mtime 一样）时，不能因为排序不稳就把刚写的那份删掉
+  eq(
+    'mtime 相同 → 按名字倒序，保住时间戳更新的那份',
+    pickStaleEntries([mk('import-backup-20261020120000', 777), mk('import-backup-20261020120100', 777)], 1),
+    ['import-backup-20261020120000'],
+  );
+  eq('空输入 / 脏输入不炸', pickStaleEntries(null, 3), []);
+  eq('脏条目被忽略', pickStaleEntries([mk('', 1), { foo: 1 }, mk('a', 2)], 1), []);
 }
 
 try {

@@ -349,9 +349,12 @@ officeace2api/
 - `node tools/test-logger.mjs` —— 日志落盘与滚动（9 项：留 3 代历史 / 本机时间列 vs
   UTC 的 `ts` / `keepRecent` 裁剪 / debug 按级别挡）
 - `node tools/test-max-tokens.mjs` —— 推理预算改写规则的单元测试（71 项）
-- `node tools/test-account-bundle.mjs` —— 账号搬运包（62 项，全在临时目录里跑：加密往返 /
+- `node tools/test-account-bundle.mjs` —— 账号搬运包（70 项，全在临时目录里跑：加密往返 /
   口令错与篡改都必须失败 / 过期凭据被丢掉 / 死名单并集 / 「本机有活链就不被覆盖」/
-  「导回原机器不长出假身份」/ 老的 `oauth-accounts.json` 也能导）
+  「导回原机器不长出假身份」/ 老的 `oauth-accounts.json` 也能导 / 备份只留最新 3 份）
+- `node tools/test-backup-prune.mjs` —— 搬运包与导入备份的清理（30 项，真跑两个 CLI：
+  不超上限就一个都不删 / 刚写出来的那份必须保住（mtime 相同也保）/ 删的是最老的 /
+  `--check` 一个字节都不写 / 非交互时不许弹资源管理器 / 真 `data\` 不许被碰）
 - `node tools/test-models.mjs` —— 模型注册表的大小写与去重（14 项：大小写归一 / 上游给
   同一模型两个拼法时只留一条 / 未知名字不许被"造"出来 / 别名与隐藏也大小写不敏感）
 - `node tools/test-exports.mjs` —— 源码卫生：`src` 里每个 `export` 都必须有人消费（9 项；

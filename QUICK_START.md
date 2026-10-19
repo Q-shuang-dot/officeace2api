@@ -100,6 +100,7 @@ curl http://127.0.0.1:7864/healthz
 
 ```bash
 node tools\export-accounts.mjs --pass 你的口令
+node tools\export-accounts.mjs --pass 你的口令 --prune   # 顺手删掉目录里的旧搬运包（留最新 3 份）
 node tools\import-accounts.mjs accounts-backup\officeace2api-accounts-xxx.json --pass 你的口令 --check
 node tools\import-accounts.mjs accounts-backup\officeace2api-accounts-xxx.json --pass 你的口令
 ```
@@ -112,6 +113,10 @@ node tools\import-accounts.mjs accounts-backup\officeace2api-accounts-xxx.json -
 > 两种情况都会自动备份到 `data\import-backup-<时间>\`。
 >
 > 新机器如果本来就装了 OfficeAce 且登过号，导入不会把同一个号重复登记。
+
+**关于那些备份文件**：`data\import-backup-<时间>\` 和 `accounts-backup\*.json` 里都是**凭据**
+（明文或有口令的包），所以两边都只保留最新 3 份，多出来的自动删掉 —— 导入时顺手清，导出时加
+`--prune` 清（不加就只列出旧的提醒你）。旧包在新电脑上导完就没用了。
 
 ## 常用命令
 

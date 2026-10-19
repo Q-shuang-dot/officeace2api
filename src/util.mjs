@@ -119,6 +119,56 @@ export function maskSecret(secret) {
   return `${s.slice(0, 8)}…${s.slice(-4)}`;
 }
 
+/**
+ * 从「越攒越多」的备份里挑出该删的那些（纯函数，便于测）。
+ *
+ * 两处在用：导入前的 `data/import-backup-<时间>/` 快照、导出时的 `accounts-backup/*.json`。
+ * 两者都是**含明文凭据的副本** —— 攒着不删等于同一个号在盘上多躺几份，而且没人会记得清。
+ * 做法和日志滚动一致：留最新的几份（默认 3）。
+ *
+ * 按 mtime 排，不解析文件名里的时间戳：文件名格式改过（`-locked` 后缀、机器名里带横线），
+ * 解析容易出错，而 mtime 永远是真实年龄。
+ *
+ * @param {{name:string, mtimeMs:number}[]} entries
+ * @param {number} keep 保留最新的几份
+ * @returns {string[]} 要删的 name，**最老的在前**（打印出来更好读）
+ */
+export function pickStaleEntries(entries, keep = 3) {
+  const list = (Array.isArray(entries) ? entries : [])
+    .filter((e) => e && e.name)
+    .map((e) => ({ name: String(e.name), mtimeMs: Number(e.mtimeMs) || 0 }));
+  // 新的在前；mtime 相同（同秒内两次操作）时按名字倒序，让时间戳大的那份排前面
+  list.sort((a, b) => b.mtimeMs - a.mtimeMs || String(b.name).localeCompare(String(a.name)));
+  return list.slice(Math.max(0, Number(keep) || 0)).map((e) => e.name).reverse();
+}
+
 export function randId(prefix = 'chatcmpl') {
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`;
+}
+
+/**
+ * 该不该替用户把文件在资源管理器里"选中"？（纯函数，便于测）
+ *
+ * `tools/export-accounts.mjs` 在 Windows 上默认会弹一下资源管理器，省得双击的用户
+ * 自己找路径 —— 这是好事。但只在**有人看着**的时候才是好事：
+ *
+ *   · 用脚本/计划任务/测试跑它时（stdout 不是终端），弹出来的窗口没人管；
+ *     更糟的是自动化场景里那个目录常常马上就被删掉，资源管理器会弹一个
+ *     「位置不可用 —— 如果该位置位于这台电脑上…」的报错框，看起来像程序坏了。
+ *     实测就是这么被用户截图问上来的：用例在临时目录里跑完 export 顺手删了目录。
+ *   · 所以：非交互环境默认不弹，除非用户明确 `--open`。
+ *
+ * @param {{explicitOpen?:boolean, explicitNo?:boolean, platform?:string, isTTY?:boolean, env?:object}} o
+ */
+export function shouldRevealInExplorer({
+  explicitOpen = false,
+  explicitNo = false,
+  platform = process.platform,
+  isTTY = false,
+  env = process.env,
+} = {}) {
+  if (explicitNo) return false; // --no-open 一票否决
+  if (String(env?.O2A_NO_OPEN || '') === '1') return false; // 脚本里常这么统一关掉
+  if (explicitOpen) return true; // 明确点名要看，管道里也照看
+  return platform === 'win32' && isTTY === true;
 }

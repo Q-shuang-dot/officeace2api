@@ -7,6 +7,9 @@
  *   node tools/import-accounts.mjs 文件.json --check        # 只看包里有什么，不写任何东西
  *
  * 服务在跑就交给服务做（它内存里那份续期状态才是权威的），没跑就直接写数据文件。
+ * 两条路都会先把 `data\accounts.json` / `oauth-accounts.json` / `refresh-state.json`
+ * 备份到 `data\import-backup-<时间>\`，并且**只保留最新 3 份**（里面是明文凭据，
+ * 攒着没人会清）。
  *
  * ⚠️ 为什么"服务在跑却要写文件"必须被拦住：
  * `data/refresh-state.json` 是「启动时读进内存、每次 save() 整份写回」的。
@@ -21,7 +24,7 @@ import { loadConfig } from '../src/config.mjs';
 import { AccountStore } from '../src/accounts.mjs';
 import { RefreshState } from '../src/refresh.mjs';
 import { mergeBundle, ONE_TIME_TOKEN_WARNING, parseBundle, summarizeAccounts } from '../src/bundle.mjs';
-import { maskSecret } from '../src/util.mjs';
+import { maskSecret, pickStaleEntries } from '../src/util.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
@@ -280,3 +283,32 @@ report(merged.results, {
   legacy: parsed.legacy,
   extra: [`备份               : ${backupDir}${backedUp.length ? `（${backedUp.join('、')}）` : '（原来没有这些文件）'}`],
 });
+
+// 备份是**含明文凭据**的副本，攒着不删等于同一个号在盘上多躺几份，而且没人会记得清。
+// 和日志滚动一个规矩：留最新 3 份，多出来的这次顺手删掉。
+const staleDirs = pickStaleEntries(
+  fs
+    .readdirSync(DATA, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && d.name.startsWith('import-backup-'))
+    .map((d) => {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = fs.statSync(path.join(DATA, d.name)).mtimeMs;
+      } catch {
+        /* 读不到就当最老的处理 */
+      }
+      return { name: d.name, mtimeMs };
+    }),
+  3,
+);
+for (const name of staleDirs) {
+  try {
+    fs.rmSync(path.join(DATA, name), { recursive: true, force: true });
+  } catch (err) {
+    console.log(`   [!] 旧备份 ${name} 没删掉：${err.message}`);
+  }
+}
+if (staleDirs.length) {
+  console.log(`     清理               : 删掉 ${staleDirs.length} 份旧备份（只留最新 3 份）：${staleDirs.join('、')}`);
+  console.log('                          （旧备份里同样是明文凭据，留着没用）');
+}

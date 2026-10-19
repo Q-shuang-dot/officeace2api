@@ -356,9 +356,14 @@ officeace2api/
   pitfalls encountered along the way.
 - `node tools/smoke-test.mjs` — end-to-end self-test
 - `node tools/test-admin.mjs` — console API self-test (223 cases)
-- `node tools/test-account-bundle.mjs` — the move-to-a-new-computer bundle (62 cases, all in a
+- `node tools/test-account-bundle.mjs` — the move-to-a-new-computer bundle (70 cases, all in a
   temp dir: encryption round-trip / wrong passphrase and tampering must fail / refresh-chain merge
-  rules / re-importing on the source machine must not create a second identity)
+  rules / re-importing on the source machine must not create a second identity / only the newest 3
+  backups are kept)
+- `node tools/test-backup-prune.mjs` — cleanup of bundles and import backups (30 cases, drives the
+  real CLIs: nothing is deleted below the limit / the bundle just written must survive (even with an
+  identical mtime) / the oldest go first / `--check` writes nothing / no Explorer popup when not interactive /
+  the real `data\` is untouched)
 - `node tools/test-max-tokens.mjs` — unit tests for the reasoning-budget rewrite rules (47 cases)
 - `node tools/test-model-probe.mjs` — unit tests for model availability probing (41 cases)
 - `node tools/stress-deep41.mjs` — large-scale load test: long sessions / long context / high
