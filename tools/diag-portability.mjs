@@ -73,7 +73,8 @@ console.log('');
 if (jwtCount > 0 && dpapiCount === 0) {
   console.log('  🔴 **data/ 里躺着明文长效凭据，这份文件不能外发。**');
   console.log('     拿到它 = 拿到别人的号（refreshToken 能换 access_token）。');
-  console.log('     「别人要用」只能让对方在**他自己机器上重新登录**一次。');
+  console.log('     换自己的机器请用 export-accounts.cmd 导出**加密的搬运包**（不是直接拷这个目录）：');
+  console.log('     包本身仍然等于凭据，导完记得在旧机器上停掉这些号（refresh_token 是一次性的）。');
 } else if (dpapiCount > 0) {
   console.log('  🟢 凭据是 DPAPI 密文：绑本机本用户，外发了也用不了。');
 } else {

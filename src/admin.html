@@ -396,6 +396,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <h2 class="pg">账号池 <small id="acSub">本机发现 + 手工导入的账号，及其凭据</small>
       <span style="flex:1"></span>
       <button class="ghost" id="acScan">重新扫描</button>
+      <button class="ghost" id="acExport" title="把本机所有账号凭据导出一个文件：换电脑时在新机器上导入，不用挨个重登">导出凭证</button>
       <button class="ghost" id="acImportToggle">导入账号</button>
     </h2>
     <section>
@@ -726,6 +727,18 @@ button:disabled{opacity:.5;cursor:not-allowed}
           <span style="flex:1"></span>
           <button class="ghost mini" id="adManual">从别的机器搬账号</button>
         </div>
+
+        <!-- 换电脑：旧机器「导出凭证」→ 这个文件 → 这里直接导入，不用挨个重登 -->
+        <div class="note info" style="margin-top:14px;line-height:1.65">
+          <b>换电脑？</b>不用挨个重新登录 —— 在旧机器上点「导出凭证」，把文件拷过来，在下面导入即可。
+          包里带的是账号档案、续期链和别名/启停状态。
+        </div>
+        <div class="row" style="margin-top:9px;gap:8px;flex-wrap:wrap">
+          <input type="file" id="adFile" accept=".json,application/json" style="flex:1;min-width:170px;font-size:12px" />
+          <input id="adFilePass" type="password" placeholder="口令（没加密就留空）" style="width:158px" autocomplete="off" />
+          <button class="ghost" id="adFileGo">从文件导入</button>
+        </div>
+        <div class="dim" id="adFileNote" style="margin-top:6px;font-size:12px;line-height:1.65"></div>
       </div>
 
       <div id="adWait" hidden>
@@ -2513,6 +2526,77 @@ function bindAccountAuthEvents() {
   });
 
   $("#acImportToggle").addEventListener("click", adOpen);
+
+  /* ---------- 换电脑：导出 / 导入整包凭据 ---------- */
+  // 导出走 fetch 而不是 window.open：面板鉴权用的是 x-admin-token 头（或 Cookie），
+  // 一个普通链接带不上头。拿回来再自己造个 <a download> 存盘。
+  $("#acExport").addEventListener("click", async () => {
+    const pass = prompt("给导出文件设个口令（强烈建议；留空 = 明文）", "");
+    if (pass === null) return; // 点了取消
+    const btn = $("#acExport");
+    btn.disabled = true;
+    try {
+      const r = await fetch("/admin/api/accounts/export" + (pass ? "?pass=" + encodeURIComponent(pass) : ""), { headers: H() });
+      const text = await r.text();
+      let doc = null;
+      try { doc = JSON.parse(text); } catch (e) { doc = null; }
+      if (doc && doc.ok === false) { toast((doc.error && doc.error.message) || "没有可导出的账号", "warn"); return; }
+      if (!r.ok) { toast("导出失败（HTTP " + r.status + "）", "err"); return; }
+      const cd = r.headers.get("content-disposition") || "";
+      const m = /filename="([^"]+)"/.exec(cd);
+      const name = m ? m[1] : "officeace2api-accounts.json";
+      const url = URL.createObjectURL(new Blob([text], { type: "application/json" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      const n = (doc && doc.stats && doc.stats.total) || (doc && doc.accounts ? doc.accounts.length : 0);
+      toast("已导出 " + n + " 个账号" + (pass ? "（已加密）" : "（明文，注意保管）"), "ok");
+      if (doc && doc.warning) $("#adFileNote").textContent = doc.warning;
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("#adFileGo").addEventListener("click", async () => {
+    const input = $("#adFile");
+    const f = input.files && input.files[0];
+    if (!f) { toast("先选一个导出文件（officeace2api-accounts-*.json）", "warn"); return; }
+    const btn = $("#adFileGo");
+    const note = $("#adFileNote");
+    btn.disabled = true;
+    note.textContent = "正在导入…";
+    try {
+      const text = await f.text();
+      const r = await api("admin/api/accounts/import-bundle", {
+        method: "POST",
+        json: { bundle: text, pass: $("#adFilePass").value },
+      });
+      const results = r.results || [];
+      const renew = results.filter((x) => x.canRenew).length;
+      const kept = results.filter((x) => x.refresh === "kept-local-chain").length;
+      const present = results.filter((x) => x.action === "already-present").length;
+      let msg = "已导入 " + results.length + " 个账号（其中 " + renew + " 个带 refresh_token，可直接续期/读积分）";
+      if (kept) msg += "；" + kept + " 个保留本机续期链（本机本来就有活链，没被覆盖）";
+      if (present) msg += "；" + present + " 个本机本来就能发现，没重复登记";
+      note.innerHTML = esc(msg) + (r.legacy ? "<br>这个包是老的 oauth-accounts.json，没带别名/启停状态。" : "") +
+        (r.warning ? "<br><span class=\"dim\">" + esc(r.warning) + "</span>" : "");
+      toast("已导入 " + results.length + " 个账号", "ok");
+      input.value = "";
+      $("#adFilePass").value = "";
+      await poll();
+    } catch (e) {
+      note.textContent = e.message;
+      toast(e.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   // #import 是直达导入弹窗的深链接：截图、书签、发给别人都用得上
   if (location.hash === "#import") adOpen();

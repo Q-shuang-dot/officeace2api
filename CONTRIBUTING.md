@@ -98,11 +98,19 @@ node src/index.mjs
 | `node tools/test-admin.mjs` | 控制台接口（223 项） |
 | `node tools/test-max-tokens.mjs` | 推理预算改写规则（47 项单元测试） |
 | `node tools/test-model-probe.mjs` | 模型可用性探测（41 项单元测试） |
+| `node tools/test-free-port.mjs` | 启动前的端口清理（8 项，真起进程：死占用要清、健康实例不许动、保留端口范围要解释） |
+| `node tools/test-account-bundle.mjs` | 换电脑的账号搬运包（64 项，临时目录里跑：加密往返 / 口令错与篡改必须失败 / 续期链合并规则 / 导回原机器不产生假身份） |
+| `node tools/diag-fresh-clone.mjs` | 用 `git ls-files` 精确模拟一次 `git clone`，在空目录里起服务 |
 | `node tools/diag-admin-auth.mjs` | 面板鉴权（无口令 / 对口令 / 错口令 / `?token=`） |
 | `node tools/diag-local-daily.mjs` | 七个菜单的真实接口 + 面板调的路径是否都存在 |
 
 **改了哪块就至少跑对应用例。** 涉及面板的改动，`test-admin.mjs` 和
 `diag-local-daily.mjs` 必须跑通。
+
+> ⚠️ **新增文件记得先 `git add`。** `diag-fresh-clone.mjs` 是用 `git ls-files` 精确模拟
+> `git clone` 的，未跟踪的文件不在它的清单里 —— 于是"本机能跑"和"别人 clone 下来能跑"
+> 会分叉。实测踩过：`src/bundle.mjs` 没 `git add`，仿真里服务直接
+> `ERR_MODULE_NOT_FOUND`，也就是别人拉下来根本起不来。
 
 > ⚠️ `tools/stress-deep41.mjs` 会**真花积分**，不是必跑的，别在 PR 里长期开着。
 

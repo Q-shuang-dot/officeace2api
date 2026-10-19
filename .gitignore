@@ -31,6 +31,10 @@ config.*.local.json
 logs/
 *.log
 
+# 换电脑用的账号搬运包（tools/export-accounts.mjs 写到这儿）。
+# 里面是**明文/加密的长期凭据**，导出一个就泄漏一份，绝不能进仓库。
+accounts-backup/
+
 # 单实例锁 / pid / node 路径探测结果
 *.pid
 data/instance.lock

@@ -203,6 +203,22 @@ export class RefreshState {
   }
 
   /**
+   * 整份替换续期状态（换电脑导入用）。
+   *
+   * 为什么需要专门的入口：`this.doc` 是**加载时读进内存、每次 save() 整份写回**的。
+   * 外部（工具/面板导入）如果直接改磁盘上的 refresh-state.json，正在跑的服务下一次
+   * save() 就会把导入的内容**整个覆盖掉** —— 表现是"导入成功了，重启后又没了"。
+   * 合并逻辑在 src/bundle.mjs（纯函数），这里只负责「换掉内存 + 落盘」。
+   */
+  replaceDoc(doc) {
+    if (!doc || typeof doc !== 'object') return false;
+    this.doc = doc;
+    this._migrate();
+    this.save();
+    return true;
+  }
+
+  /**
    * 决定这次该用哪个 refresh_token。
    *
    * 背景：磁盘上的档案是**只读**的（OfficeAce 自己不刷新它），所以那里的 token

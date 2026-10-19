@@ -180,6 +180,9 @@ Double-click **`remove-autostart.cmd`** to uninstall.
 | `stop.cmd` | Stop |
 | `status.cmd` | Show health and the model list |
 | `open-panel.cmd` | Open the console (starts the service first if needed) |
+| `free-port.cmd` | Free the port (double-click this first if the service will not start) |
+| `export-accounts.cmd` | **Export every account credential** (for moving computers; password-protected) |
+| `import-accounts.cmd` | **Import the bundle on the new machine** (drag the file onto it) |
 | `install-autostart.cmd` | Install autostart |
 | `remove-autostart.cmd` | Remove autostart |
 
@@ -187,7 +190,7 @@ Double-click **`remove-autostart.cmd`** to uninstall.
 
 ## 4. Ways to add accounts
 
-Four ways. The first one covers everyday use.
+Five ways. The first one covers everyday use; the second is for moving to a new computer.
 
 ### A. Self-service sign-in in the console (recommended)
 
@@ -200,23 +203,48 @@ Console → **Account pool** → top right **Import account** → dialog:
 
 After signing in in the browser, the account lands in the pool by itself — no extra clicks.
 
-### B. Move an account from another machine
+### B. New computer / reinstall: move every credential at once
 
-If you have a machine that is already signed in and do not want to sign in again:
+**No re-signing required.** Export on the old machine, copy one file, import on the new one —
+accounts, labels, enabled/disabled state and the refresh chains all come along.
 
-Copy `api_base` and `custom_headers.Authorization` from that machine's `models.json` into
+1. **Old machine**: double-click `export-accounts.cmd` (or console → **Accounts** → **Export credentials**),
+   choose a passphrase (**recommended**; empty = plaintext). It writes
+   `accounts-backup\officeace2api-accounts-<host>-<time>-locked.json`.
+2. Copy that file to the new machine.
+3. **New machine**: double-click `import-accounts.cmd` and **drag the file onto it**, same passphrase.
+4. Double-click `start.cmd`, open the console, hit **Refresh credits** — if it reads a balance, the chain works.
+5. **Stop those accounts on the old machine** (disable them, or `stop.cmd`) — see the note below.
+
+The console has the same thing: **Export credentials** button on the Accounts page, and a
+**Import from file** row at the bottom of the Import dialog.
+
+> **`[!]` The `refresh_token` is single-use.** Two machines taking turns with the same token hit
+> `STS5.1806` and both must sign in again. Exporting is a **move**, not a copy — for concurrent use,
+> sign in once on each machine (two independent authorization chains).
+
+The bundle carries: the account record (long-lived Basic auth), the 24h temporary AK/SK, the
+refresh_token, the DPoP private key, the refresh chain (including the blacklist of dead tokens),
+labels and enabled/disabled state. Encryption is AES-256-GCM + scrypt; the passphrase is never
+written to disk, so losing it means signing in again.
+
+### C. Move a **single** account from another machine (manual)
+
+Only need one account, or all you have is `models.json`: copy `api_base` and
+`custom_headers.Authorization` from that machine's `models.json` into
 **Import account → Move account from another machine**.
 
-### C. Bulk registration
+### D. Bulk registration
 
 Console → **Settings → Authorization / Registration → Bulk registration**: give it a batch of
 phone numbers and the service registers Huawei Cloud accounts, provisions them and adds them
 to the pool. Requires an SMS verification-code source (manual entry or an HTTP endpoint).
 
-### D. Auto-discover accounts already signed in on this machine
+### E. Auto-discover accounts already signed in on this machine
 
 If the OfficeAce desktop client was installed and signed in on this machine, its accounts are
-pulled into the pool on startup — **zero configuration**.
+pulled into the pool on startup — **zero configuration**. (So after a move, if the new machine
+also has OfficeAce signed in, the two sets merge instead of duplicating.)
 
 ---
 
@@ -256,6 +284,13 @@ Use `127.0.0.1:7864`, not `localhost:7864`. The service binds IPv4 only and brow
 Double-click `start.cmd`, or delegate to the scheduled task with `install-autostart.cmd`.
 Logs are in `logs\server.log`.
 
+**Q: `start.cmd` does nothing / the service will not start.**
+The usual cause is a busy port. Every start entry point now clears it first
+(`tools/free-port.ps1`): a previous instance that never exited cleanly, or any other
+program, is stopped before node is launched — while a **healthy** instance of this
+service is always left alone. If it cannot be cleared, or you want to see who holds the
+port, double-click `free-port.cmd`; every action is logged to `logs\port-clean.log`.
+
 **Q: The client returns an empty body with HTTP 200.**
 The upstream treats `max_tokens` as the budget for *reasoning + answer*. A reasoning model
 spends the whole budget on its chain of thought and leaves nothing for the answer. Set
@@ -270,6 +305,12 @@ The upstream catalog is not the same as per-account entitlements. Unavailable mo
 Port and bind address require a restart; everything else takes effect when you click Save in
 the console.
 
+**Q: I changed computers (or reinstalled Windows) — do I have to sign in again?**
+No. Export on the old machine with `export-accounts.cmd` (set a passphrase), copy the file over,
+then drag it onto `import-accounts.cmd` on the new machine — see
+[4.B](#b-new-computer--reinstall-move-every-credential-at-once). **Disable those accounts on the
+old machine afterwards**: the `refresh_token` is single-use and two machines racing it hit `STS5.1806`.
+
 **Q: Where is the data stored? Is anything uploaded?**
 Everything stays local: `data\` (account state, usage, credit history) and `logs\`. Both are
 in `.gitignore` and never enter the repository. The service performs no external reporting.
@@ -283,6 +324,10 @@ officeace2api/
 ├── start.cmd / stop.cmd / status.cmd      start, stop, inspect
 ├── install-autostart.cmd                  install as autostart
 ├── open-panel.cmd                         open the console
+├── free-port.cmd                          free the port (start here when it will not start)
+├── export-accounts.cmd                    export every credential (moving computers)
+├── import-accounts.cmd                    import that bundle on the new machine
+├── accounts-backup/                       exported bundles land here (not tracked: they ARE credentials)
 ├── config.json                            config (auto-generated, not tracked)
 ├── src/                                   the service
 │   ├── index.mjs       entry point
@@ -290,12 +335,16 @@ officeace2api/
 │   ├── pool.mjs        account pool and rotation
 │   ├── quota.mjs       credit queries / check-in / circuit breaker
 │   ├── refresh.mjs     automatic credential renewal
+│   ├── bundle.mjs      account bundle: export / import / encryption / merge rules
 │   ├── admin.html      console front-end (single file)
 │   └── ...
 ├── tools/                                 diagnostics, regression tests, watchdog
+│   ├── free-port.ps1   port cleanup, shared by start/stop/watchdog
+│   ├── watchdog.ps1    the scheduled task payload (auto-restarts a dead server)
+│   └── service.ps1     install / start / stop / status of the scheduled task
 ├── docs/                                  console screenshots + technical notes
 ├── data/                                  runtime data (not tracked)
-└── logs/                                  logs (not tracked)
+└── logs/                                  logs (not tracked; includes port-clean.log)
 ```
 
 ---
@@ -307,6 +356,9 @@ officeace2api/
   pitfalls encountered along the way.
 - `node tools/smoke-test.mjs` — end-to-end self-test
 - `node tools/test-admin.mjs` — console API self-test (223 cases)
+- `node tools/test-account-bundle.mjs` — the move-to-a-new-computer bundle (62 cases, all in a
+  temp dir: encryption round-trip / wrong passphrase and tampering must fail / refresh-chain merge
+  rules / re-importing on the source machine must not create a second identity)
 - `node tools/test-max-tokens.mjs` — unit tests for the reasoning-budget rewrite rules (47 cases)
 - `node tools/test-model-probe.mjs` — unit tests for model availability probing (41 cases)
 - `node tools/stress-deep41.mjs` — large-scale load test: long sessions / long context / high

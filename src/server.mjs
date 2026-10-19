@@ -3,9 +3,21 @@
  */
 
 import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { clearRecentLogs, configureLogger, createLogger, getRecentLogs } from './logger.mjs';
 import { adminHtml } from './admin.mjs';
 import { saveConfig } from './config.mjs';
+import {
+  buildBundle,
+  bundleFileName,
+  collectAccounts,
+  mergeBundle,
+  ONE_TIME_TOKEN_WARNING,
+  parseBundle,
+  summarizeAccounts,
+} from './bundle.mjs';
 import {
   buildUpstreamBody,
   classifyUpstream,
@@ -20,6 +32,26 @@ import {
 import { trimSlash } from './util.mjs';
 
 const log = createLogger('server');
+/**
+ * 代码根目录。`/healthz` 会把它带出去，作用是**认亲**：
+ * `tools/export-accounts.mjs` / `tools/import-accounts.mjs` 先看端口上这个服务是不是
+ * 「我这个目录里的代码起的」。否则同一台机器上放两份项目（或旧版还在跑），
+ * 导入就会 POST 到另一个目录的服务上 —— 实测踩过：报一句"管理员 token 无效"，
+ * 但其实账号包已经被发到别的实例去了。
+ */
+const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 这个请求是不是从本机来的？
+ * `remoteAddress` 在 Windows 上会是 `::ffff:127.0.0.1` 这种映射形式，所以要一起认。
+ * 拿不到地址（比如某些自建代理 socket）时按"不是本机"处理 —— 宁可少给字段。
+ */
+function isLoopbackRequest(req) {
+  const remote = String(req?.socket?.remoteAddress || '');
+  if (!remote) return false;
+  const v4 = remote.replace(/^::ffff:/i, '');
+  return remote === '::1' || v4.startsWith('127.');
+}
 const MAX_BODY = 64 * 1024 * 1024;
 // 请求地址（含 query）上限。超过就答 414，别交给 new URL() 慢慢啃。
 const MAX_URL_LENGTH = 8 * 1024;
@@ -1459,6 +1491,123 @@ export function createApp(ctx) {
         return;
       }
 
+      /* ---------------------------------------- 换电脑：整个号池导出 / 导入 */
+
+      // 导出：把本机所有能搬的账号打成包（?pass= 给了就整包加密）。
+      //
+      // 为什么要一次导出全部而不是逐号导：换电脑时人只会点一次。包里同时带
+      // 档案（refresh_token + DPoP 私钥）+ 续期链状态 + 别名/启停，缺一样新机器就得重登。
+      // 详见 src/bundle.mjs 顶部那段说明。
+      if (pathname === '/admin/api/accounts/export' && req.method === 'GET') {
+        const q = new URL(req.url, 'http://localhost').searchParams;
+        const pass = String(q.get('pass') || '');
+        try {
+          const collected = collectAccounts({
+            // rawList 是带明文的内部记录；面板那份 list() 是脱敏的，导不出凭据
+            accounts: ctx.accounts.rawList(),
+            oauthDoc: ctx.accounts.readOauthDoc(),
+            refreshDoc: ctx.accounts.refreshState?.doc || {},
+            meta: ctx.accounts.meta,
+          });
+          if (!collected.length) {
+            return sendJson(res, 200, {
+              ok: false,
+              empty: true,
+              error: {
+                message:
+                  '本机没有可导出的账号。先去 OfficeAce 登录一个号，或在面板上「导入账号」，再回来导出。',
+              },
+            });
+          }
+          const bundle = buildBundle(
+            { accounts: collected, appVersion: ctx.version, host: os.hostname(), user: process.env.USERNAME || '' },
+            { pass },
+          );
+          const body = JSON.stringify(bundle, null, pass ? 0 : 1);
+          const name = bundleFileName({ host: os.hostname(), encrypted: !!pass });
+          res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Content-Length': Buffer.byteLength(body),
+            // 浏览器会按这个名字存盘；中文名在这里不做（HTTP 头只放 ASCII 更稳）
+            'Content-Disposition': `attachment; filename="${name}"`,
+            'Cache-Control': 'no-store',
+            // 这个响应体里是明文凭据，别让任何中间层缓存
+            Pragma: 'no-cache',
+          });
+          res.end(body);
+          log.info('已导出账号搬运包', {
+            accounts: collected.length,
+            encrypted: !!pass,
+            file: name,
+            stats: summarizeAccounts(collected),
+          });
+        } catch (err) {
+          log.warn('导出账号搬运包失败', { error: String(err?.message || err) });
+          sendJson(res, 500, { error: { message: `导出失败：${err?.message || err}` } });
+        }
+        return;
+      }
+
+      // 导入：body = { bundle: <JSON 文本或对象>, pass?: '口令' }
+      //
+      // 必须走服务端而不是让工具直接改文件：`data/refresh-state.json` 是
+      // 「加载进内存、每次 save() 整份写回」的，外部改了磁盘会被下一轮 save 覆盖掉
+      // （表现是"导入成功，重启后没了"）。这里改的是内存里那份，再由它落盘。
+      if (pathname === '/admin/api/accounts/import-bundle' && req.method === 'POST') {
+        const body = await readJson(req);
+        let parsed;
+        try {
+          parsed = parseBundle(body.bundle === undefined ? body : body.bundle, { pass: String(body.pass || '') });
+        } catch (err) {
+          return sendJson(res, 400, {
+            ok: false,
+            needPass: err.code === 'NEED_PASS',
+            error: { message: String(err?.message || err) },
+          });
+        }
+        try {
+          const merged = mergeBundle(parsed, {
+            oauthDoc: ctx.accounts.readOauthDoc(),
+            refreshDoc: ctx.accounts.refreshState?.doc || {},
+            meta: ctx.accounts.meta,
+            // 本机已经能发现的号不重复登记（见 mergeBundle 里 manual 分支那段说明）
+            knownIds: new Set(ctx.accounts.ids()),
+          });
+          if (!ctx.accounts.writeOauthDoc(merged.oauthDoc)) {
+            return sendJson(res, 500, { error: { message: '写账号档案失败，见 logs\\server.log' } });
+          }
+          if (ctx.accounts.refreshState) ctx.accounts.refreshState.replaceDoc(merged.refreshDoc);
+          ctx.accounts.meta = merged.meta;
+          ctx.accounts.save();
+          const accounts = ctx.accounts.scan();
+          const added = ctx.requestRediscover('account-import-bundle');
+          // 新机器上积分缓存是空的：立刻问一遍，面板不用等下一轮刷新
+          if (ctx.credits) {
+            for (const r of merged.results) ctx.credits.get(r.id, { force: true }).catch(() => {});
+          }
+          log.info('已导入账号搬运包', {
+            from: parsed.source || '',
+            total: merged.results.length,
+            added: merged.results.filter((r) => r.action === 'added').length,
+            keptLocalChain: merged.results.filter((r) => r.refresh === 'kept-local-chain').length,
+          });
+          sendJson(res, 200, {
+            ok: true,
+            results: merged.results,
+            stats: parsed.stats || null,
+            legacy: parsed.legacy === true,
+            warning: ONE_TIME_TOKEN_WARNING,
+            added,
+            accounts,
+            status: ctx.accounts.status(),
+          });
+        } catch (err) {
+          log.warn('导入账号搬运包失败', { error: String(err?.message || err) });
+          sendJson(res, 500, { error: { message: `导入失败：${err?.message || err}` } });
+        }
+        return;
+      }
+
       if (pathname === '/admin/api/accounts/remove' && req.method === 'POST') {
         const body = await readJson(req);
         if (!body.id) return sendJson(res, 400, { error: { message: '缺少 id' } });
@@ -1775,6 +1924,9 @@ export function createApp(ctx) {
           //    这个字段就是"到底藏了什么"的账本。
           modelsUnavailable: listUnavailableModels(),
           uptimeMs: Date.now() - ctx.startedAt,
+          // 认亲用（见文件顶部 APP_ROOT 的注释）：搬账号的 CLI 靠它确认没找错服务。
+          // 只在**本机**访问时给：安装路径 + pid is 不该被公网上的探针顺手拿走的信息。
+          ...(isLoopbackRequest(req) ? { root: APP_ROOT, pid: process.pid } : {}),
         });
         return;
       }

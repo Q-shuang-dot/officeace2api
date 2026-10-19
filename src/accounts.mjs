@@ -724,6 +724,39 @@ export class AccountStore {
   }
 
   /**
+   * 读整份 `data/oauth-accounts.json`（换电脑导出用；拿到的就是文件里的原始结构）。
+   * 每次现读，不用缓存 —— 这个文件也会被别的路径（自助登录 / 补凭据）写。
+   */
+  readOauthDoc() {
+    return loadOauthAccounts(this.oauthFile);
+  }
+
+  /**
+   * 整份写回 `data/oauth-accounts.json`（换电脑导入用）。
+   *
+   * 只给 bundle.mjs 的合并结果用：合并是**读整份 → 改 → 写整份**，
+   * 所以这里不能走 upsertOauthAccount（那是单条合并，会把别的号覆盖掉）。
+   * 权限收紧（lockDownFile）：里面是明文 Basic 凭据 + 一次性 token + DPoP 私钥。
+   */
+  writeOauthDoc(doc) {
+    if (!this.oauthFile) return false;
+    try {
+      fs.mkdirSync(path.dirname(this.oauthFile), { recursive: true });
+      writeFileAtomic(this.oauthFile, JSON.stringify(doc || {}, null, 2), { mode: 0o600 });
+      lockDownFile(this.oauthFile);
+      return true;
+    } catch (err) {
+      log.error('写账号档案失败', { error: err.message });
+      return false;
+    }
+  }
+
+  /** 文件路径（给 CLI / 报错信息用） */
+  oauthFilePath() {
+    return this.oauthFile;
+  }
+
+  /**
    * 往 `data/oauth-accounts.json` 里写一条自助登录记录（或补进已有的那条）。
    *
    * ⚠️ 是**合并**不是覆盖：文件里还有 refresh_token、DPoP 私钥这些续期要用的东西，
@@ -902,6 +935,16 @@ export class AccountStore {
   }
 
   /* ---- 面板视图（脱敏） ---- */
+
+  /**
+   * 号池内部记录原样返回（**带明文凭据**）。
+   *
+   * 只给"换电脑导出"那条路用（src/bundle.mjs 要拿全量档案拼搬运包），
+   * 面板走的是下面脱敏的 list()。别在别处拿它往 HTTP 上吐。
+   */
+  rawList() {
+    return [...this.accounts.values()];
+  }
 
   list({ includeSecret = false } = {}) {
     return [...this.accounts.values()].map((a) => ({
