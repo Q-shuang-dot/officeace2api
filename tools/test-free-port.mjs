@@ -270,13 +270,20 @@ let deadPort = 0;
     console.log('  - 本机没有保留端口范围，跳过这一项');
   } else {
     const port = ranges[0].start;
+    // Windows 的 excludedportrange 在不同 build / 网络栈下语义并不完全一致：
+    // 有的机器上落在段内仍然 bind 得动（本案就是这样）。这种环境没法用
+    // 「绑定失败」来验证保留段分支，跳过比硬造一个失败更诚实。
+    if (await bindable(port)) {
+      console.log(`  - 保留段 ${port} 在当前系统仍可绑定，跳过这一项`);
+    } else {
     const r = runFreePort(port);
     // 断言只用 ASCII 标记：powershell.exe 的中文输出走的是控制台代码页（936/437…），
     // 跨机器按 UTF-8 解码会变成乱码，拿中文原文断言等于在测这台机器的区域设置。
     // "winnat" 只出现在「保留端口范围」那一条分支里，config.json 是它给的第二个办法。
-    const explained = /net stop winnat/.test(r.out) && /config\.json/.test(r.out);
-    if (r.code !== 0 && explained) ok(`保留端口范围（${port}）→ 不杀进程，而是解释清楚`);
-    else bad(`保留端口范围（${port}）→ 不杀进程，而是解释清楚`, `code=${r.code} explained=${explained} ${r.out.replace(/\s+/g, ' ').trim().slice(0, 200)}`);
+      const explained = /net stop winnat/.test(r.out) && /config\.json/.test(r.out);
+      if (r.code !== 0 && explained) ok(`保留端口范围（${port}）→ 不杀进程，而是解释清楚`);
+      else bad(`保留端口范围（${port}）→ 不杀进程，而是解释清楚`, `code=${r.code} explained=${explained} ${r.out.replace(/\s+/g, ' ').trim().slice(0, 200)}`);
+    }
   }
 }
 

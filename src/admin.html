@@ -375,7 +375,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
   <!-- 凭据池 -->
   <div class="page" id="p-creds">
-    <h2 class="pg">凭据池 <small>来自本机 OfficeAce 客户端</small></h2>
+    <h2 class="pg">凭据池 <small id="credSub">来自本机 OfficeAce 客户端</small></h2>
     <section>
       <div class="body scroll" id="credBody"></div>
     </section>
@@ -1446,16 +1446,34 @@ async function saveModels(patch) {
 /* ---------------- 凭据池 ---------------- */
 function renderCreds() {
   const list = S.pool || [];
+  const ps = S.poolStats || {};
+  const affTotal = (ps.affinityHits || 0) + (ps.affinityMisses || 0);
+  const aff = affTotal ? Math.round(((ps.affinityHits || 0) / affTotal) * 100) : null;
+  const bits = ["来自本机 OfficeAce 客户端"];
+  if (aff !== null) bits.push("同会话续用 " + aff + "%");
+  if (ps.queueWaits) bits.push("排队 " + ps.queueWaits + " 次 / 超时 " + (ps.queueTimeouts || 0));
+  const tripped = list.filter((c) => c.breakerMsLeft > 0).length;
+  if (tripped) bits.push("熔断 " + tripped + " 个");
+  $("#credSub").textContent = bits.join(" · ");
   $("#credBody").innerHTML = list.length ? tbl(
-    ["#", "上游地址", "鉴权", "来源文件", "成功 / 失败", "冷却", "状态"],
+    ["#", "上游地址", "鉴权", "来源文件", "成功 / 失败", "在途 / 首包", "冷却", "状态"],
     list.map((c) => [
       '<span class="dim">' + c.index + "</span>",
       "<code>" + esc(c.baseUrl) + "</code>",
       "<code>" + esc(c.authPreview) + "</code>",
       '<span class="dim" style="font-size:11.5px">' + esc(c.source) + "</span>",
       '<span class="num">' + c.ok + " / " + c.fail + "</span>",
-      c.cooldownMsLeft > 0 ? '<span class="tag warn">' + Math.ceil(c.cooldownMsLeft / 1000) + "s</span>" : '<span class="dim">-</span>',
-      c.cooldownMsLeft > 0 ? '<span class="tag warn">冷却中</span>' : '<span class="tag ok">可用</span>'
+      '<span class="num">' + (c.inFlight || 0) + " / " + (c.ewmaTtfbMs ? ms(c.ewmaTtfbMs) : "-") + "</span>",
+      c.breakerMsLeft > 0
+        ? '<span class="tag err">熔断 ' + Math.ceil(c.breakerMsLeft / 1000) + "s</span>"
+        : c.cooldownMsLeft > 0
+          ? '<span class="tag warn">' + Math.ceil(c.cooldownMsLeft / 1000) + "s</span>"
+          : '<span class="dim">-</span>',
+      c.breakerMsLeft > 0
+        ? '<span class="tag err">熔断中 L' + (c.breakerLevel || 1) + "</span>"
+        : c.cooldownMsLeft > 0
+          ? '<span class="tag warn">冷却中</span>'
+          : '<span class="tag ok">可用</span>'
     ])
   ) : empty("没有发现凭据 —— 点右上角「换个账号登录」自己登一个（不需要 OfficeAce 桌面端）");
 }
@@ -1466,24 +1484,28 @@ function renderUsage() {
   const models = Object.entries(u.byModel || {}).sort((a, b) => b[1].requests - a[1].requests);
   const keys = Object.entries(u.byApiKey || {});
   $("#usSub").textContent = u.since ? "统计自 " + new Date(u.since).toLocaleString("zh-CN") : "";
+  const cached = Number(t.cached_tokens) || 0;
+  const cachedPct = t.prompt_tokens ? Math.round((cached / t.prompt_tokens) * 100) : 0;
   $("#usCards").innerHTML = [
     ["请求总数", num(t.requests || 0), ""],
     ["成功", num(t.ok || 0), "ok"],
     ["失败", num(t.failed || 0), (t.failed ? "err" : "")],
     ["总 tokens", num(t.total_tokens || 0), ""],
     ["输入 / 输出", num(t.prompt_tokens || 0) + " / " + num(t.completion_tokens || 0), ""],
+    ["缓存命中", cachedPct + "%", "cached " + num(cached), cachedPct > 0 ? "ok" : ""],
     ["覆盖模型", String(models.length), ""],
-  ].map(([k, v, c]) => card(k, v, "", c)).join("");
+  ].map(([k, v, s, c]) => card(k, v, s, c)).join("");
 
   const maxReq = Math.max(1, ...models.map(([, m]) => m.requests));
   $("#usModels").innerHTML = models.length ? tbl(
-    ["模型", "请求", "占比", "成功 / 失败", "tokens", "平均延迟"],
+    ["模型", "请求", "占比", "成功 / 失败", "tokens", "缓存", "平均延迟"],
     models.map(([id, m]) => [
       "<code>" + esc(id) + "</code>",
       '<span class="num">' + num(m.requests) + "</span>",
       '<div class="bar" style="min-width:80px"><i style="width:' + Math.max(2, Math.round((m.requests / maxReq) * 100)) + '%"></i></div>',
       '<span class="num">' + num(m.ok) + " / " + (m.failed ? '<span style="color:var(--err)">' + num(m.failed) + "</span>" : "0") + "</span>",
       '<span class="num dim">' + num(m.total_tokens) + "</span>",
+      '<span class="num dim">' + num(m.cached_tokens || 0) + "</span>",
       '<span class="num">' + ms(m.avgLatencyMs) + "</span>",
     ])
   ) : empty("还没有用量数据");

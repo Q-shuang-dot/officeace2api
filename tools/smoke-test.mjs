@@ -29,12 +29,35 @@ const wantStream = argv.includes('--stream');
 
 const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` };
 
+let failures = 0;
+function assert(cond, msg) {
+  if (!cond) throw new Error(`断言失败: ${msg}`);
+}
+function fail(msg) {
+  failures += 1;
+  console.error(`✗ ${msg}`);
+}
+
 async function listModels() {
   const res = await fetch(`${base}/v1/models`, { headers });
   if (!res.ok) throw new Error(`/v1/models -> HTTP ${res.status}`);
   const doc = await res.json();
+  assert(Array.isArray(doc.data) && doc.data.length > 0, `/v1/models 返回了空列表（data.length=${doc.data?.length}）`);
+  assert(
+    doc.data.every((m) => m && typeof m.id === 'string' && m.id.length > 0),
+    '/v1/models 列表里存在缺少 id 的条目'
+  );
   console.log(`/v1/models  正常，共 ${doc.data.length} 个模型`);
   return doc.data.map((m) => m.id);
+}
+
+async function checkHealth() {
+  const res = await fetch(`${base}/healthz`, { headers });
+  assert(res.status === 200, `/healthz -> HTTP ${res.status}（期望 200）`);
+  const doc = await res.json();
+  assert(typeof doc.version === 'string' && doc.version.length > 0, '/healthz 响应缺少 version 字段');
+  console.log(`/healthz     正常，版本 ${doc.version}`);
+  return doc.version;
 }
 
 async function chat(modelId, stream) {
@@ -89,12 +112,25 @@ async function chat(modelId, stream) {
   console.log('  ' + content.trim().slice(0, 300));
 }
 
+await checkHealth();
+
 const ids = await listModels();
 const target = model || ids.find((id) => /glm-5\.2$/.test(id)) || ids[0];
 if (!target) {
   console.error('没有可用模型');
   process.exit(1);
 }
-await chat(target, false);
-await chat(target, true);
+
+for (const stream of [false, true]) {
+  try {
+    await chat(target, stream);
+  } catch (err) {
+    fail(`${stream ? '流式' : '非流式'} chat 失败: ${err.message}`);
+  }
+}
+
+if (failures > 0) {
+  console.error(`\n自测失败 ❌ 共 ${failures} 项`);
+  process.exit(1);
+}
 console.log('\n自测通过 ✅');

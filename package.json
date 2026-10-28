@@ -9,7 +9,8 @@
     "start": "node src/index.mjs",
     "dev": "node --watch src/index.mjs",
     "dump": "node tools/dump-cred.mjs",
-    "smoke": "node tools/smoke-test.mjs"
+    "smoke": "node tools/smoke-test.mjs",
+    "test": "node tools/run-tests.mjs"
   },
   "engines": {
     "node": ">=20.0.0"

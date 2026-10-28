@@ -134,6 +134,16 @@ const pool = new CredentialPool({
   cooldownOnRateLimitMs: config.quota?.cooldownOnRateLimitMs ?? 20000,
   cooldownOnAuthErrorMs: config.quota?.cooldownOnAuthErrorMs ?? 300000,
   perModelCooldown: config.quota?.credentialPerModelCooldown !== false,
+  maxInFlightPerCredential: config.pool?.maxInFlightPerCredential ?? 2,
+  sessionTtlSeconds: config.pool?.sessionTtlSeconds ?? 1800,
+  latencyWeightMs: config.pool?.latencyWeightMs ?? 800,
+  queueTimeoutMs: config.pool?.queueTimeoutMs ?? 10000,
+  cooldownOnRateLimitMaxMs: config.quota?.cooldownOnRateLimitMaxMs ?? 600000,
+  breakerThreshold: config.pool?.breakerThreshold ?? 3,
+  breakerCooldownMs: config.pool?.breakerCooldownMs ?? 60000,
+  breakerMaxMs: config.pool?.breakerMaxMs ?? 900000,
+  // 冷却/熔断/会话黏性落盘；重启后不会立刻再打刚被限流的号。
+  stateFile: path.join(ROOT, 'data', 'pool-state.json'),
 });
 
 const registry = new ModelRegistry(config.models || {});
@@ -984,12 +994,16 @@ function shutdown(signal) {
   releaseInstanceLock();
   server.close(() => process.exit(0));
   usage.flush();
+  pool.flushState();
   setTimeout(() => process.exit(0), 3000).unref();
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 // 兜底：不管怎么退（正常 / 异常 / 被 watchdog 掐），都别把锁留在盘上
-process.on('exit', () => releaseInstanceLock());
+process.on('exit', () => {
+  try { pool.flushState(); } catch { /* 退出路径上不再抛 */ }
+  releaseInstanceLock();
+});
 process.on('uncaughtException', (err) => log.error('未捕获异常', { error: String(err?.stack || err) }));
 process.on('unhandledRejection', (err) => log.error('未处理 Promise 拒绝', { error: String(err?.stack || err) }));

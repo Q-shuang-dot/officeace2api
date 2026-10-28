@@ -26,7 +26,8 @@
 | `/v1/models` | 模型列表 |
 | Function Calling | 工具调用原样透传 |
 | `reasoning_content` | 推理模型的思维链，单独字段返回 |
-| `usage` | token 统计（含 `reasoning_tokens`） |
+| `usage` | token 统计（含 `reasoning_tokens`、`cached_tokens`） |
+| `X-Request-Id` / `Server-Timing` | 每个请求都有可复制的 ID；流式返回首包耗时，非流式返回总耗时 |
 
 任何能填 Base URL 的客户端都能接：Cherry Studio、NextChat、LobeChat、Cline、Roo Code、
 Continue、Cursor、Dify、沉浸式翻译、OpenAI SDK……
@@ -53,7 +54,8 @@ Continue、Cursor、Dify、沉浸式翻译、OpenAI SDK……
 
 ### 自动化
 
-- **多账号号池**：自动轮询、限流冷却、积分熔断（余额见底的号自动跳过）
+- **多账号号池**：首包延迟 + 在途数调度、会话黏性（长上下文尽量命中上游缓存）、满员短队列、限流指数退避、连续失败熔断、积分熔断（余额见底的号自动跳过）；冷却/熔断/黏性会落盘，重启不重置
+- **模型兜底**：`models.fallback` 里配好备用模型，主模型 429/5xx 时自动换一个重试
 - **凭据自动续期**：临时凭据到期前自动换新，不用管
 - **换电脑搬家**：一键导出全部账号凭证（可加口令加密），新机器一键导入，不用重新登录
 - **每日自动签到**：定时领积分
@@ -300,6 +302,44 @@ DPoP 私钥、续期链（含已作废 token 的黑名单）、别名、启停�
 正文就空了。设 `config.json` 的 `models.minMaxTokens`（默认 1024）让服务自动补足预算。
 详见 [技术笔记](docs/技术笔记.md)。
 
+**Q：面板日志里一堆 `上游中断流 ... "error":"client disconnected"`，是不是号坏了？**
+不是。`client disconnected` 是**调用方（客户端）在响应写完之前先断开**时，服务自己
+abort 上游请求带出来的原因 —— 常见于客户端超时重试、用户点停止、切换会话/模型。
+它和上游 RST / `upstream timeout` 是两回事，不会罚凭据、也不该记成上游故障。
+
+现在这类事件记成 `INFO 客户端已断开...`，并带上 `request_id / seq / src / ua / elapsedMs`，方便看是
+哪个客户端断的、对应客户端拿到的哪个 `X-Request-Id`。流式请求如果 3 秒还没等到首包，服务会先回 `200 + SSE 头` 并每 10 秒
+发一个 `: ping` 注释帧，避免客户端在等 HTTP 头时超时；可用 `config.json` 的
+`upstream.earlyHeaderMs` 调整（设 `0` 关闭，回到"等首帧再发头"）。
+
+**Q：长上下文怎么尽量省钱/降延迟？**
+同一个会话尽量固定到同一个账号，才能命中上游的 prefix cache。`config.json` 的
+`pool.sessionTtlSeconds` 控制黏性时长（默认 1800 秒，设 0 关闭）；客户端如果支持，
+也可以直接带 `x-session-id` 请求头。面板「用量」页会显示缓存命中率
+（上游不返回 `cached_tokens` 时显示 0%，不影响请求）。
+
+**Q：服务重启后，限流冷却和会话黏性会丢吗？**
+不会。`data/pool-state.json` 会保存冷却、熔断等级、连续失败数、被拒模型和会话黏性，启动时只恢复仍在有效期内的条目。文件里**不存 Authorization、也不存原始会话 key**（只存不可逆哈希），删除该文件即可手动重置号池状态。状态超过 7 天会自动忽略，避免拿过期结论做调度。
+
+**Q：某个号连续 5xx，会不会每个请求都先打它一次？**
+不会。连续 `pool.breakerThreshold` 次（默认 3）账号级失败后，该号进入熔断：`pool.breakerCooldownMs` 起（默认 60 秒）按 2 倍递增，封顶 `pool.breakerMaxMs`（默认 15 分钟）；成功一次即清零。429 仍按 `quota.cooldownOnRateLimitMs` 起做指数退避，封顶 `quota.cooldownOnRateLimitMaxMs`（默认 10 分钟）。400/401/413 和客户端主动断开不会计进熔断。
+
+**Q：客户端报错时怎么快速定位日志？**
+每个响应都带 `X-Request-Id`，错误 JSON 里也有 `request_id`；把这一串贴到面板日志搜索/`logs\server.log` 里就能找到同一次请求。`Server-Timing` 还会给流式首包（`ttfb;dur=...`）或非流式总耗时（`total;dur=...`）。
+
+**Q：主模型被限流，能自动换备用模型吗？**
+可以，在 `config.json` 里配（默认关闭）：
+
+```json
+"models": {
+  "fallback": {
+    "deepseek-v4.1-flash": ["deepseek-v4.1-flash-1017", "glm-5.3-flash"]
+  }
+}
+```
+
+主模型在 429 / 5xx / 凭据耗尽时才会兜底；400/401/413 不换模型（换了也救不了）。成功时响应头 `X-Fallback-Model` 会标明实际用的备用模型。
+
 **Q：模型列表里有些模型打不通？**
 上游网关的目录 ≠ 每个都有权限。打不通的会返回 400 `model_not_available`，
 具体哪些能用见 [技术笔记](docs/技术笔记.md)。
@@ -333,6 +373,8 @@ officeace2api/
 ├── src/                                   服务本体
 │   ├── index.mjs       入口
 │   ├── server.mjs      HTTP 路由与 API 实现
+│   ├── http-utils.mjs  请求 ID / SSE 头 / JSON 响应 / 背压
+│   ├── routing.mjs     会话黏性 key / Retry-After 解析
 │   ├── pool.mjs        号池与轮询
 │   ├── quota.mjs       积分查询 / 签到 / 熔断
 │   ├── refresh.mjs     凭据自动续期
@@ -357,6 +399,17 @@ officeace2api/
 - **[docs/技术笔记.md](docs/技术笔记.md)** —— 实现原理、OAuth/PKCE 链路、
   DPAPI 解密、V11-HMAC-SHA256 签名、推理模型 token 预算、踩过的坑，都在这里。
 - `node tools/smoke-test.mjs` —— 端到端自测
+- `node tools/test-routing.mjs` —— 路由纯函数（7 项：显式会话 ID / system 变化不破黏性 /
+  Retry-After 秒数与 HTTP 日期）
+- `node tools/test-http-utils.mjs` —— HTTP 头与请求 ID（7 项：SSE 不写假 `Server-Timing` /
+  有 ttfb 才写 / JSON CORS 暴露头 / 请求 ID 不重复）
+- `node tools/test-stream-e2e.mjs` —— 流式链路 E2E（17 项，假上游 + 真 `createApp`：
+  正常 SSE / 主模型 429 兜底 / 客户端 abort 后归还号池在途 / 400 不罚号 / 请求 ID / Server-Timing）
+- `node tools/test-pool-scheduler.mjs` —— 号池调度器（20 项：会话黏性 / EWMA /
+  每模型 EWMA / 在途软上限 / 短队列 / Retry-After / 调度计数）
+- `node tools/test-pool-persistence.mjs` —— 号池状态持久化与熔断（21 项：5xx 连败熔断 /
+  指数退避 / 429 退避 / 跨实例恢复冷却与黏性 / 状态文件不含密钥 / 损坏与过期状态兜底）
+- `node tools/test-usage-cache.mjs` —— 缓存 token 统计（5 项）
 - `node tools/test-admin.mjs` —— 控制台接口自测（284 项，含配置卫生：死配置检测、
   日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie、
   上游错误体装在 SSE 帧里也要能解析出 `code`/`message`、面板载荷不许把 `usage.recent`

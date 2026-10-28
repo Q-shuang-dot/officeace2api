@@ -14,6 +14,7 @@
     "extraHeaders": {},
     "includeUsage": true,
     "timeoutSeconds": 600,
+    "earlyHeaderMs": 3000,
     "maxRetries": 3,
     "retryBackoffMs": 1200
   },
@@ -25,13 +26,24 @@
     "alias": {},
     "hidden": [],
     "extra": [],
+    "fallback": {},
     "minMaxTokens": 1024,
     "reasoningModels": []
   },
   "quota": {
     "cooldownOnRateLimitMs": 20000,
+    "cooldownOnRateLimitMaxMs": 600000,
     "cooldownOnAuthErrorMs": 300000,
     "credentialPerModelCooldown": true
+  },
+  "pool": {
+    "maxInFlightPerCredential": 2,
+    "sessionTtlSeconds": 1800,
+    "latencyWeightMs": 800,
+    "queueTimeoutMs": 10000,
+    "breakerThreshold": 3,
+    "breakerCooldownMs": 60000,
+    "breakerMaxMs": 900000
   },
   "credits": {
     "enabled": true,

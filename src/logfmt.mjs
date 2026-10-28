@@ -133,6 +133,8 @@ export function formatChatLine(f = {}) {
 
   // `src=` 和 `ua=` 是**同一段**里的两个键：用空格分隔，不是两个 `|` 段。
   // 一开始我把它俩各推一段，日志里就变成 `| src=::1 | ua="..."`，扫读时多一个竖线。
+  // 请求 ID 放在最后，方便复制给开发者对日志；没有就不占位置。
+  if (f.rid) seg.push(`rid=${String(f.rid).slice(0, 40)}`);
   seg.push(`src=${cleanIp(f.src)} ua="${cleanUa(f.ua)}"`);
 
   return `${parts.join(' ')} | ${seg.join(' | ')}`;

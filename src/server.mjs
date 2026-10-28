@@ -31,8 +31,24 @@ import {
 } from './upstream.mjs';
 import { trimSlash } from './util.mjs';
 import { formatChatLine } from './logfmt.mjs';
+import { nextRequestId, readJson, sendJson, writeChunk, writeSseHead } from './http-utils.mjs';
+import { retryAfterMsOf, sessionAffinityKey } from './routing.mjs';
 
 const log = createLogger('server');
+
+/**
+ * 下游客户端在响应写完之前断开时，请求入口用这个 message abort（见 `res.on('close')`）。
+ *
+ * ⚠️ 只有它代表「客户端走了」。上游自己的超时是 `upstream timeout`，上游 RST 是
+ * `terminated` / `other side closed` —— 三者混在一起，日志就会把「客户端取消」
+ * 写成「上游断流」，让人以为号池出问题了。
+ */
+const CLIENT_DISCONNECTED = 'client disconnected';
+
+function isClientDisconnect(err) {
+  return String(err?.message || err || '') === CLIENT_DISCONNECTED;
+}
+
 /**
  * 代码根目录。`/healthz` 会把它带出去，作用是**认亲**：
  * `tools/export-accounts.mjs` / `tools/import-accounts.mjs` 先看端口上这个服务是不是
@@ -95,7 +111,6 @@ function isLoopbackRequest(req) {
   const v4 = remote.replace(/^::ffff:/i, '');
   return remote === '::1' || v4.startsWith('127.');
 }
-const MAX_BODY = 64 * 1024 * 1024;
 // 请求地址（含 query）上限。超过就答 414，别交给 new URL() 慢慢啃。
 const MAX_URL_LENGTH = 8 * 1024;
 
@@ -123,61 +138,6 @@ function cookieValue(header, name) {
   return '';
 }
 
-function sendJson(res, status, payload) {
-  if (res.writableEnded || res.headersSent) {
-    if (!res.writableEnded) res.end();
-    return;
-  }
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body),
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-  });
-  res.end(body);
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (chunk) => {
-      size += chunk.length;
-      if (size > MAX_BODY) {
-        const e = new Error('请求体过大 (>64MB)');
-        e.status = 413;
-        e.code = 'BODY_TOO_LARGE';
-        reject(e);
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
-
-async function readJson(req) {
-  const raw = await readBody(req);
-  if (!raw.length) return {};
-  let parsed;
-  try {
-    parsed = JSON.parse(raw.toString('utf8'));
-  } catch (err) {
-    const e = new Error(`JSON 解析失败: ${err.message}`);
-    e.status = 400;
-    e.code = 'BAD_JSON';
-    throw e;
-  }
-  // JSON.parse 还认 null / 数字 / 字符串 / 数组，但下面每个调用点都当对象用，
-  // 于是 `JSON.parse("null")` 会让 body.id 抛 TypeError → 500。
-  // 这里统一归一成 {}，等价于「没带参数」，所有调用点就都安全了。
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-  return parsed;
-}
 
 /**
  * 模型名校验。通过返回 null，否则返回要发回客户端的 {status, body}。
@@ -306,22 +266,34 @@ async function primeUpstream(upstreamRes, { timeoutMs }) {
 }
 
 /** 流式透传：把上游字节原样写给客户端，同时旁路统计 */
-async function relayPrimed(primed, res, { model }) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream; charset=utf-8',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-    'X-Accel-Buffering': 'no',
-    'Access-Control-Allow-Origin': '*',
-  });
-  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+async function relayPrimed(primed, res, { model, signal, startedAt } = {}) {
+  // 慢首包时头可能已经由 earlyHeaderMs 的看门狗发出去了，不能再 writeHead。
+  // 正常路径这里正好是「首帧已经到了」的时刻，顺手给客户端一个 Server-Timing。
+  writeSseHead(res, { ttfbMs: startedAt ? Date.now() - startedAt : null });
+
+  // 客户端在预读期间已经走了：别往一个 destroy 掉的 socket 上写。
+  if (res.destroyed) {
+    return {
+      usage: null,
+      firstDataAt: 0,
+      tokens: 0,
+      contentChars: 0,
+      reasoningChars: 0,
+      finishReason: null,
+      sawToolCalls: false,
+      error: null,
+      truncated: false,
+      upstreamError: '',
+      clientGone: true,
+    };
+  }
 
   const acc = createChatAccumulator(model);
   acc.push(primed.events);
 
   for (const buf of primed.raw) {
-    if (res.writableEnded) break;
-    res.write(buf);
+    if (res.writableEnded || res.destroyed) break;
+    await writeChunk(res, buf);
   }
   if (typeof res.flush === 'function') res.flush();
 
@@ -332,22 +304,28 @@ async function relayPrimed(primed, res, { model }) {
     for (;;) {
       const { done, value } = await primed.reader.read();
       if (done) break;
-      if (res.writableEnded) {
+      if (res.writableEnded || res.destroyed) {
         clientGone = true; // 客户端自己走了，不是上游的问题
         break;
       }
-      res.write(value);
+      await writeChunk(res, value);
       acc.push(primed.decoder.push(value));
       if (typeof res.flush === 'function') res.flush();
     }
     acc.push(primed.decoder.flush());
   } catch (err) {
-    // 上游把连接掐了（RST / socket destroyed）。
-    //
-    // 这里刻意不让异常往外抛：抛出去的话调用方的 handle.cleanup()、池子记账、
-    // usage 记录全被跳过 —— 一条断掉的流会被记成成功。现在把它转成返回值，
-    // 让调用方能照实记一笔失败。
-    upstreamError = String(err?.message || err);
+    // 先分清是谁掐的：
+    //   · 下游客户端走了（signal.reason / 错误 message 是 client disconnected）
+    //     → 不是上游的锅，不能记断流，更不能拿它去 markFailed 罚凭据；
+    //   · 其余才是上游把连接掐了（RST / socket destroyed）。
+    if (isClientDisconnect(err) || isClientDisconnect(signal?.reason) || res.destroyed) {
+      clientGone = true;
+    } else {
+      // 这里刻意不让异常往外抛：抛出去的话调用方的 handle.cleanup()、池子记账、
+      // usage 记录全被跳过 —— 一条断掉的流会被记成成功。现在把它转成返回值，
+      // 让调用方能照实记一笔失败。
+      upstreamError = String(err?.message || err);
+    }
   } finally {
     // 「残流」= 客户端还在、但既没读到 [DONE] 也没见过任何 finish_reason。
     //
@@ -585,9 +563,13 @@ export function createApp(ctx) {
     }
   }
 
-  async function runCompletion({ res, body, model, wantStream, apiKey, endpoint, abortSignal, req }) {
+  async function runCompletion({ res, body, model, wantStream, apiKey, endpoint, abortSignal, req, requestId = '' }) {
     const startedAt = Date.now();
     const seq = ++chatSeq;
+    const rid = requestId || nextRequestId();
+    // 同一会话尽量固定到同一个号，命中上游 prefix cache（几万 token 的上下文
+    // 换号等于每轮从零 prefill）。没有会话 ID 时按首条消息哈希兜底。
+    const sessionKey = sessionAffinityKey(body, model, req);
     /*
      * 日志要用的客户端信息，在这里一次性取好。
      *
@@ -602,6 +584,70 @@ export function createApp(ctx) {
     const requestedEffort = String(body?.reasoning_effort ?? body?.effort ?? '').trim();
     const maxAttempts = Math.max(1, Number(config.upstream.maxRetries) || 1);
     const timeoutMs = Math.max(30, Number(config.upstream.timeoutSeconds) || 600) * 1000;
+
+    /**
+     * 下游是不是已经走了。
+     *
+     * 请求入口只在 `res` 关闭且响应没写完时 abort，reason 固定是 CLIENT_DISCONNECTED；
+     * 上游超时用的是 postChat 自己的 controller（reason = `upstream timeout`），
+     * 不会把这里的判断污染成"客户端跑了"。
+     */
+    const clientIsGone = () => !!abortSignal?.aborted && isClientDisconnect(abortSignal.reason);
+
+    /**
+     * 慢首包保活（只对流式生效）。
+     *
+     * 现状：`primeUpstream` 要等上游第一帧才让 `relayPrimed` 发 HTTP 头。上游
+     * 首字 p50 3.4s、p90 7.5s，客户端在这段时间里只能干等一个没有响应头的连接；
+     * 等不及就断，日志里就是 0 token 的 `client disconnected`。
+     *
+     * 这里到点先把 200 + SSE 头发出去，再每 10s 补一个 `: ping` 注释帧。
+     * 注释帧是合法 SSE，OpenAI 客户端会忽略。此时内部重试照旧可以做 —— 客户端
+     * 只是看到连接活着，真正的错误最后会以 `data: {"error":...}` + `[DONE]` 收尾。
+     *
+     * 设 0 = 关闭（保持旧行为：等首帧再发头）。
+     */
+    const earlyHeaderMs = Math.max(0, Number(config.upstream.earlyHeaderMs ?? 3000) || 0);
+    let heartbeatTimer = null;
+    let pingTimer = null;
+    const stopHeartbeat = () => {
+      if (heartbeatTimer) {
+        clearTimeout(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
+    };
+    if (wantStream && earlyHeaderMs > 0) {
+      heartbeatTimer = setTimeout(() => {
+        heartbeatTimer = null;
+        if (res.headersSent || res.writableEnded || res.destroyed) return;
+        writeSseHead(res);
+        try {
+          res.write(': ping\n\n');
+        } catch {
+          /* 客户端已经走了 */
+        }
+        pingTimer = setInterval(() => {
+          if (res.writableEnded || res.destroyed) {
+            stopHeartbeat();
+            return;
+          }
+          try {
+            res.write(': ping\n\n');
+          } catch {
+            stopHeartbeat();
+          }
+        }, 10000);
+        pingTimer.unref?.();
+      }, earlyHeaderMs);
+      heartbeatTimer.unref?.();
+      res.once('close', stopHeartbeat);
+      res.once('finish', stopHeartbeat);
+    }
+
     const attempts = [];
     let attemptsLeft = maxAttempts;
     let stripThinking = !!quirksFor(model).noThinking;
@@ -644,10 +690,23 @@ export function createApp(ctx) {
     const retryFloor = Math.max(0, Number(config.models?.emptyRetryFloorTokens) || 2048);
     const retryContentRoom = Math.max(0, Number(config.models?.emptyRetryContentTokens) || 512);
 
-    while (attemptsLeft > 0) {
+    /**
+     * 当前这一发占着哪个号。
+     *
+     * 每一轮开头先还上一发的在途计数；整个循环外面再包一层 finally，
+     * 保证「客户端断开 / 模型不可用 / 直接 return」这些提前退出也不会漏还。
+     */
+    let currentCred = null;
+    try {
+      while (attemptsLeft > 0) {
+      if (currentCred) {
+        pool.release(currentCred);
+        currentCred = null;
+      }
       attemptsLeft -= 1;
       const attemptNo = attempts.length + 1;
-      const cred = pool.pick(model);
+      const cred = await pool.acquire(model, { sessionKey, trackInFlight: true });
+      currentCred = cred;
       if (!cred) {
         return openAiError(
           '凭据池为空：打开控制台「号池」页点「换个账号登录」即可（不需要 OfficeAce 桌面端）；' +
@@ -699,11 +758,33 @@ export function createApp(ctx) {
         });
       } catch (err) {
         const message = String(err?.message || err);
+        // 客户端自己断的：不是上游连接失败，别罚凭据、别打 WARN、更别重试。
+        if (isClientDisconnect(err) || clientIsGone()) {
+          stopHeartbeat();
+          log.info('客户端已断开，取消上游请求（不是上游故障）', {
+            seq,
+            rid,
+            model,
+            stage: 'connect',
+            elapsedMs: Date.now() - startedAt,
+            src: clientSrc,
+            ua: clientUa,
+          });
+          return null;
+        }
         pool.markFailed(cred, message);
         lastError = message;
         lastStatus = 502;
         attempts.push({ attempt: attemptNo, cred: cred.baseUrl, error: message });
-        log.warn('上游连接失败', { model, error: message });
+        log.warn('上游连接失败', {
+          seq,
+          rid,
+          model,
+          error: message,
+          elapsedMs: Date.now() - startedAt,
+          src: clientSrc,
+          ua: clientUa,
+        });
         await sleep(backoffMs(Number(config.upstream.retryBackoffMs) || 1000, attemptNo));
         continue;
       }
@@ -712,6 +793,7 @@ export function createApp(ctx) {
 
       if (!upstreamRes.ok) {
         const text = await upstreamRes.text().catch(() => '');
+        const retryAfterMs = retryAfterMsOf(upstreamRes.headers);
         handle.cleanup();
         const info = classifyUpstream(upstreamRes.status, text);
         lastError = info.message;
@@ -773,7 +855,11 @@ export function createApp(ctx) {
             { status: 413, type: 'invalid_request_error', code: 'request_too_large' },
           );
         } else if (info.rateLimited) {
-          pool.markRateLimited(cred, model, info.message);
+          pool.markRateLimited(cred, model, info.message, retryAfterMs);
+        } else if (info.badRequest) {
+          // 400 是请求级错误：同样的 body 换号也过不了，不能拿它罚账号。
+          // 尤其 `unsupportedParam` 的剥离重试：一次坏参数不该攒进熔断计数。
+          log.info('上游 4xx 请求错误，不计入账号熔断', { model, code: info.code, message: info.message });
         } else {
           pool.markFailed(cred, info.message);
         }
@@ -800,7 +886,41 @@ export function createApp(ctx) {
         continue;
       }
 
-      const primed = await primeUpstream(upstreamRes, { timeoutMs: Math.min(timeoutMs, 90000) });
+      let primed;
+      try {
+        primed = await primeUpstream(upstreamRes, { timeoutMs: Math.min(timeoutMs, 90000) });
+      } catch (err) {
+        handle.cleanup();
+        if (isClientDisconnect(err) || clientIsGone()) {
+          stopHeartbeat();
+          log.info('客户端已断开，停止等待首包（不是上游故障）', {
+            seq,
+            rid,
+            model,
+            stage: 'prime',
+            elapsedMs: Date.now() - startedAt,
+            src: clientSrc,
+            ua: clientUa,
+          });
+          return null;
+        }
+        const message = String(err?.message || err);
+        pool.markFailed(cred, message);
+        lastError = message;
+        lastStatus = 502;
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, error: message });
+        log.warn('上游首包读取失败', {
+          seq,
+          rid,
+          model,
+          error: message,
+          elapsedMs: Date.now() - startedAt,
+          src: clientSrc,
+          ua: clientUa,
+        });
+        await sleep(backoffMs(Number(config.upstream.retryBackoffMs) || 1000, attemptNo));
+        continue;
+      }
 
       if (primed.kind === 'error') {
         handle.cleanup();
@@ -828,8 +948,28 @@ export function createApp(ctx) {
       }
 
       if (wantStream) {
-        const result = await relayPrimed(primed, res, { model });
+        // 已经有数据了，不用再发心跳；relayPrimed 会接着往同一个响应写。
+        stopHeartbeat();
+        const result = await relayPrimed(primed, res, { model, signal: abortSignal, startedAt });
         handle.cleanup();
+        // 首包时间只在这一发真的拿到字节时才有意义；客户端秒断传 0，别污染 EWMA。
+        pool.release(cred, result.firstDataAt ? result.firstDataAt - startedAt : 0, model);
+        currentCred = null;
+
+        if (result.clientGone || clientIsGone()) {
+          // 客户端自己走了：不 markFailed、不记 usage 失败，也不打 WARN。
+          log.info('客户端已断开，停止转发（不是上游故障）', {
+            seq,
+            rid,
+            model,
+            stage: 'stream',
+            tokens: result.tokens,
+            elapsedMs: Date.now() - startedAt,
+            src: clientSrc,
+            ua: clientUa,
+          });
+          return null;
+        }
 
         if (result.error) {
           // 字节已经透传出去了（客户端能看见那个 error 帧），没法再重试；
@@ -837,7 +977,8 @@ export function createApp(ctx) {
           // 下一个请求还会挑到它，然后继续报同样的错。
           const info = classifyUpstream(200, JSON.stringify({ error: result.error }));
           if (info.rateLimited) pool.markRateLimited(cred, model, info.message);
-          else pool.markFailed(cred, info.message);
+          else if (!info.badRequest) pool.markFailed(cred, info.message);
+          else log.info('流内 4xx 请求错误，不计入账号熔断', { model, code: info.code, message: info.message });
           usage.record({
             model,
             apiKey,
@@ -875,7 +1016,16 @@ export function createApp(ctx) {
             endpoint,
             credential: cred.baseUrl,
           });
-          log.warn('上游中途断流', { model, error: msg, tokens: result.tokens });
+          log.warn('上游中途断流', {
+            seq,
+            rid,
+            model,
+            error: msg,
+            tokens: result.tokens,
+            elapsedMs: Date.now() - startedAt,
+            src: clientSrc,
+            ua: clientUa,
+          });
           return null;
         }
 
@@ -894,6 +1044,7 @@ export function createApp(ctx) {
         log.info(
           formatChatLine({
             seq,
+            rid,
             startedAt,
             model,
             stream: true,
@@ -930,6 +1081,23 @@ export function createApp(ctx) {
 
       const agg = await aggregatePrimed(primed, { model });
       handle.cleanup();
+      pool.release(cred, 0, model);
+      currentCred = null;
+
+      // 客户端在等整段聚合时断开：不是上游失败，别重试、别罚凭据。
+      if (clientIsGone() || isClientDisconnect(agg.upstreamError)) {
+        stopHeartbeat();
+        log.info('客户端已断开，放弃非流式请求（不是上游故障）', {
+          seq,
+          rid,
+          model,
+          stage: 'aggregate',
+          elapsedMs: Date.now() - startedAt,
+          src: clientSrc,
+          ua: clientUa,
+        });
+        return null;
+      }
 
       // 上游在流中间失败，有三种形态：
       //   1) 中途回了个 error 帧（伪 200 的第二种形态）
@@ -955,7 +1123,8 @@ export function createApp(ctx) {
         lastStatus = info.rateLimited ? 429 : 502;
         attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: info.code, error: info.message });
         if (info.rateLimited) pool.markRateLimited(cred, model, info.message);
-        else pool.markFailed(cred, info.message);
+        else if (!info.badRequest) pool.markFailed(cred, info.message);
+        else log.info('上游流内 4xx 请求错误，不计入账号熔断', { model, code: info.code, message: info.message });
         log.warn('上游流中途以 200 返回错误体', {
           model,
           code: info.code,
@@ -1056,6 +1225,7 @@ export function createApp(ctx) {
       log.info(
         formatChatLine({
           seq,
+          rid,
           startedAt,
           model,
           stream: false,
@@ -1074,7 +1244,29 @@ export function createApp(ctx) {
           attempt: attemptNo,
         }),
       );
+      if (!res.headersSent) {
+        res.setHeader('Server-Timing', `total;dur=${Date.now() - startedAt}`);
+      }
       return { status: 200, body: payload };
+      }
+    } finally {
+      if (currentCred) pool.release(currentCred);
+    }
+
+    stopHeartbeat();
+
+    // 重试都打完了，但客户端早就走了：没有可写的地方，也別记一条假失败。
+    if (clientIsGone()) {
+      log.info('客户端已断开，放弃本次请求（不是上游故障）', {
+        seq,
+        rid,
+        model,
+        stage: 'final',
+        elapsedMs: Date.now() - startedAt,
+        src: clientSrc,
+        ua: clientUa,
+      });
+      return null;
     }
 
     usage.record({
@@ -1105,10 +1297,63 @@ export function createApp(ctx) {
         : 'upstream_failed',
     });
     err.body.attempts = attempts;
+    err.body.request_id = rid;
+
+    /*
+     * 慢首包看门狗已经把 `200 + SSE 头` 发出去了，状态码改不了：
+     * 只能按 SSE 的规矩补一个错误帧 + [DONE]，别让客户端拿着半截流干等。
+     */
+    if (res.headersSent) {
+      try {
+        res.write(`data: ${JSON.stringify(err.body)}\n\ndata: [DONE]\n\n`);
+      } catch {
+        /* 客户端已经走了 */
+      }
+      if (!res.writableEnded) res.end();
+      return null;
+    }
+
     return err;
   }
 
+  /**
+   * 主模型失败后的兜底。只在响应尚未开始时重跑，避免和已经发出的
+   * SSE 头/半截正文打架。默认关闭：`models.fallback` 为空就不做任何事。
+   */
+  async function runWithFallback(args) {
+    const first = await runCompletion(args);
+    if (!first) return null;
+
+    const status = Number(first.status);
+    if (![429, 500, 502, 503].includes(status) || args.fallbackDepth) return first;
+    if (args.res?.headersSent) return first;
+
+    const requested = String(args.requestedModel || args.model || '');
+    const chain = config.models?.fallback?.[requested] ?? config.models?.fallback?.[args.model] ?? [];
+    if (!Array.isArray(chain) || !chain.length) return first;
+
+    const known = new Set(registry.ids());
+    for (const candidate of chain) {
+      const next = registry.resolve(candidate);
+      if (!next || next === args.model || !known.has(next)) continue;
+      log.info('主模型失败，尝试兜底模型', {
+        from: args.model,
+        to: next,
+        status,
+        requestId: args.requestId,
+      });
+      args.res?.setHeader('X-Fallback-Model', next);
+      return runCompletion({ ...args, model: next, fallbackDepth: 1 });
+    }
+    return first;
+  }
+
   const server = http.createServer({ maxHeaderSize: 64 * 1024 }, async (req, res) => {
+    // 请求 ID 从一开始就定下来：客户端报错时把这行响应头贴过来，
+    // 就能在日志里精确找到这一次请求（seq 进程重启会归零，rid 不会）。
+    const rid = nextRequestId();
+    res.setHeader('X-Request-Id', rid);
+
     // 超长 URL 直接 414 收场。
     //
     // `new URL()` 对几 MB 的 URL 既慢又吃内存，而且 request-line 已经超过
@@ -1232,6 +1477,7 @@ export function createApp(ctx) {
           },
           config,
           pool: creds,
+          poolStats: pool.stats(),
           models: registry.detailed(),
           usage: usageSlim,
           recent: recentRows,
@@ -1313,6 +1559,7 @@ export function createApp(ctx) {
           ctx.requestRediscover('config_change');
         }
         if (patch.quota) pool.setCooldowns(config.quota);
+        if (patch.pool) pool.setBreakerPolicy(config.pool);
         if (patch.models) registry.apply(config.models);
         if (patch.log?.level) configureLogger({ level: config.log.level, keepRecent: config.log.keepRecent, file: ctx.logFile });
 
@@ -2186,15 +2433,17 @@ export function createApp(ctx) {
         res.on('close', () => {
           if (!res.writableEnded) abortController.abort(new Error('client disconnected'));
         });
-        const result = await runCompletion({
+        const result = await runWithFallback({
           res,
           req,
           body,
           model,
+          requestedModel: body.model || model,
           wantStream,
           apiKey: auth.key,
           endpoint: pathname,
           abortSignal: abortController.signal,
+          requestId: rid,
         });
         if (result) sendJson(res, result.status, result.body);
         return;
@@ -2231,15 +2480,17 @@ export function createApp(ctx) {
         res.on('close', () => {
           if (!res.writableEnded) abortController.abort(new Error('client disconnected'));
         });
-        const result = await runCompletion({
+        const result = await runWithFallback({
           res,
           req,
           body: chatBody,
           model,
+          requestedModel: body.model || model,
           wantStream: body.stream === true,
           apiKey: auth.key,
           endpoint: pathname,
           abortSignal: abortController.signal,
+          requestId: rid,
         });
         if (result) sendJson(res, result.status, result.body);
         return;
@@ -2269,6 +2520,7 @@ export function createApp(ctx) {
           res.writeHead(up.status, {
             'Content-Type': 'application/json; charset=utf-8',
             'Access-Control-Allow-Origin': '*',
+            'Access-Control-Expose-Headers': 'X-Request-Id',
           });
           res.end(text);
         } catch (err) {
@@ -2289,15 +2541,16 @@ export function createApp(ctx) {
       // 一律 500 会让客户端以为服务挂了然后重试，日志里也全是假警报。
       const status = Number(err?.status) || 500;
       if (status >= 500) {
-        log.error('请求处理异常', { pathname, error: String(err?.stack || err) });
+        log.error('请求处理异常', { requestId: rid, pathname, error: String(err?.stack || err) });
       } else {
-        log.warn('请求参数有问题', { pathname, status, error: String(err?.message || err) });
+        log.warn('请求参数有问题', { requestId: rid, pathname, status, error: String(err?.message || err) });
       }
       sendJson(res, status, {
         error: {
           message: String(err?.message || err),
           type: status >= 500 ? 'internal_error' : 'invalid_request_error',
           ...(err?.code ? { code: err.code } : {}),
+          request_id: rid,
         },
       });
     }

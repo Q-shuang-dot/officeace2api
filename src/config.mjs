@@ -48,6 +48,9 @@ const DEFAULTS = {
     extraHeaders: {},
     includeUsage: true,
     timeoutSeconds: 600,
+    // 流式请求等首包超过这个毫秒数就先回 200 + SSE 头并每 10s 发 `: ping`，
+    // 避免客户端在等 HTTP 头时超时断开。0 = 关闭（等首帧再发头）。
+    earlyHeaderMs: 3000,
     maxRetries: 3,
     retryBackoffMs: 1200,
   },
@@ -66,6 +69,12 @@ const DEFAULTS = {
     alias: {},
     hidden: [],
     extra: [],
+    /**
+     * 主模型全部重试失败后，按顺序尝试的备用模型。
+     * 形如 { "deepseek-v4.1-flash": ["deepseek-v4.1-flash-1017", "glm-5.3-flash"] }。
+     * 只在 429 / 5xx / 凭据耗尽时触发，400/401/413 不兜底（换模型也救不了）。
+     */
+    fallback: {},
     // 推理模型的「推理预算」：客户端要多少，就额外再给这么多 token 让它推理。
     // 设 0 = 完全不动客户端的参数。
     //
@@ -145,7 +154,31 @@ const DEFAULTS = {
     probeTtlMs: 21600000, // 结论多久算过期（6 小时）
     probeConcurrency: 4, // 并发数
   },
-  quota: { cooldownOnRateLimitMs: 20000, cooldownOnAuthErrorMs: 300000, credentialPerModelCooldown: true },
+  quota: {
+    cooldownOnRateLimitMs: 20000,
+    // 连续 429 指数退避的封顶；Retry-After 仍作为下限，不会被这个值截短到不合理。
+    cooldownOnRateLimitMaxMs: 600000,
+    cooldownOnAuthErrorMs: 300000,
+    credentialPerModelCooldown: true,
+  },
+  /**
+   * 号池调度。
+   *
+   * `maxInFlightPerCredential` 是软上限：优先挑没满的号，全都满了就挑最闲的，
+   * 不会因为排队把请求卡住。`sessionTtlSeconds` 是会话黏性的保持时间 ——
+   * 同一个会话在这段时间内尽量回同一个号，命中上游 prefix cache。
+   */
+  pool: {
+    maxInFlightPerCredential: 2,
+    sessionTtlSeconds: 1800,
+    latencyWeightMs: 800,
+    queueTimeoutMs: 10000,
+    // 连续 5xx / 传输层失败触发熔断；60s 起翻倍，封顶 15 分钟。
+    // 400/401/413 和客户端主动断开不会走到这里。
+    breakerThreshold: 3,
+    breakerCooldownMs: 60000,
+    breakerMaxMs: 900000,
+  },
   // 积分额度：把「每个号还剩多少积分」从华为云端问出来（V11-HMAC-SHA256 签名）
   credits: {
     enabled: true,

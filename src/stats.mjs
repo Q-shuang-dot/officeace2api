@@ -14,7 +14,7 @@ export class UsageStore {
     this.file = file;
     this.data = {
       since: new Date().toISOString(),
-      totals: { requests: 0, ok: 0, failed: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      totals: { requests: 0, ok: 0, failed: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 },
       byModel: {},
       byApiKey: {},
       recent: [],
@@ -37,6 +37,13 @@ export class UsageStore {
 
   record(entry) {
     const { model, apiKey, usage, ok, latencyMs, error, credential, stream, endpoint } = entry;
+    // 上游各家字段名不一样：OpenAI 标准是 prompt_tokens_details.cached_tokens，
+    // 也有直接给 usage.cached_tokens 的。拿不到就当 0，不影响原有统计。
+    const cachedTokens = Number(
+      usage?.prompt_tokens_details?.cached_tokens ??
+      usage?.cached_tokens ??
+      0,
+    ) || 0;
     const t = this.data.totals;
     t.requests += 1;
     if (ok) t.ok += 1;
@@ -45,6 +52,7 @@ export class UsageStore {
       t.prompt_tokens += usage.prompt_tokens || 0;
       t.completion_tokens += usage.completion_tokens || 0;
       t.total_tokens += usage.total_tokens || 0;
+      t.cached_tokens = (Number(t.cached_tokens) || 0) + cachedTokens;
     }
     const modelKey = model || 'unknown';
     const m = (this.data.byModel[modelKey] ||= {
@@ -54,6 +62,7 @@ export class UsageStore {
       prompt_tokens: 0,
       completion_tokens: 0,
       total_tokens: 0,
+      cached_tokens: 0,
       avgLatencyMs: 0,
     });
     m.requests += 1;
@@ -63,6 +72,7 @@ export class UsageStore {
       m.prompt_tokens += usage.prompt_tokens || 0;
       m.completion_tokens += usage.completion_tokens || 0;
       m.total_tokens += usage.total_tokens || 0;
+      m.cached_tokens = (m.cached_tokens || 0) + cachedTokens;
     }
     m.avgLatencyMs = Math.round((m.avgLatencyMs * (m.requests - 1) + (latencyMs || 0)) / m.requests);
 
@@ -81,6 +91,7 @@ export class UsageStore {
       latencyMs: latencyMs || 0,
       prompt_tokens: usage?.prompt_tokens ?? null,
       completion_tokens: usage?.completion_tokens ?? null,
+      cached_tokens: cachedTokens,
       credential: credential || '',
       error: error || '',
     });
@@ -108,7 +119,7 @@ export class UsageStore {
   reset() {
     this.data = {
       since: new Date().toISOString(),
-      totals: { requests: 0, ok: 0, failed: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      totals: { requests: 0, ok: 0, failed: 0, prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, cached_tokens: 0 },
       byModel: {},
       byApiKey: {},
       recent: [],
