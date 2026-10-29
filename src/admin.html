@@ -12,7 +12,7 @@
 :root{
   --bg:#f4f5f8; --panel:#ffffff; --panel2:#f8f9fb; --panel3:#eef1f6;
   --line:#e2e5ec; --line2:#eceef3;
-  --fg:#14171f; --muted:#545c6e; --dim:#8b93a5;
+  --fg:#14171f; --muted:#545c6e; --dim:#6b7385;
   --accent:#3d5fe0; --accent-d:#2f4bc0;
   --ok:#0f9d63; --warn:#b47611; --err:#cf3b34;
   /* 强调色衍生：浅底上的文字 / 边框 / 底色 */
@@ -73,6 +73,7 @@ section>h3{margin:0;padding:11px 15px;font-size:12.5px;font-weight:600;color:var
 section>h3 .sp{flex:1}
 .body{padding:14px 15px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:11px}
+#ovCards{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
 .card{background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:11px 13px}
 .card .k{color:var(--muted);font-size:11.5px;letter-spacing:.03em}
 .card .v{font-size:21px;font-weight:600;margin-top:5px;font-variant-numeric:tabular-nums;font-family:var(--mono);color:var(--fg);
@@ -111,7 +112,7 @@ td.ctr,th.ctr{text-align:center}
 /* ---------- 账号列表专用 ---------- */
 /* 这张表列多、每格都是短值：整表锁 nowrap + 固定列宽，宁可在窄窗口横向滚，
    也不让任何一格折行 —— 一折行操作按钮就会掉到第二排。 */
-.t-acc{table-layout:fixed;min-width:1160px}
+.t-acc{table-layout:fixed;min-width:1065px}
 .t-acc tbody td{vertical-align:top;padding:12px;white-space:nowrap}
 .acc-nm{display:flex;align-items:center;gap:7px;font-size:13.5px;font-weight:600;color:var(--fg)}
 .acc-sub{font-size:11.5px;color:var(--dim);font-family:var(--mono);line-height:1.5;
@@ -127,6 +128,11 @@ td.ctr,th.ctr{text-align:center}
 .pt-bar{height:5px;border-radius:3px;background:var(--line);overflow:hidden;margin:7px 0 2px;width:100%;max-width:168px}
 .pt-bar i{display:block;height:100%;background:var(--accent)}
 .pt-bar i.ok{background:var(--ok)} .pt-bar i.warn{background:var(--warn)} .pt-bar i.err{background:var(--err)}
+.pt-trend{display:flex;align-items:flex-end;gap:6px;margin-top:5px;min-height:16px}
+.pt-spark{display:flex;align-items:flex-end;gap:2px;height:16px;flex:none}
+.pt-spark i{width:5px;border-radius:1px;background:var(--line);min-height:2px}
+.pt-spark i.on{background:var(--accent)}
+.pt-trend .d{font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ops{display:flex;gap:6px;flex-wrap:nowrap;justify-content:center}
 .ops button{flex:none}
 
@@ -167,6 +173,19 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .bar i{display:block;height:100%;background:var(--accent)}
 .bar.big{height:9px;border-radius:5px}
 .bar i.ok{background:var(--ok)} .bar i.warn{background:var(--warn)} .bar i.err{background:var(--err)}
+.trend{display:flex;align-items:flex-end;gap:10px;height:132px;padding:4px 2px 0}
+.trend .day{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:4px;height:100%}
+.trend .col{width:100%;max-width:56px;height:92px;display:flex;flex-direction:column;justify-content:flex-end;background:transparent;border-radius:4px;overflow:hidden}
+.trend .col i{display:block;width:100%}
+.trend .col i.ok{background:var(--ok)}
+.trend .col i.bad{background:var(--err)}
+.trend .n{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+.trend .d{font-size:11px;color:var(--dim);white-space:nowrap}
+.errrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line2);font-size:12.5px}
+.errrow:last-child{border-bottom:0}
+.errrow .k{width:92px;flex:none;color:var(--muted)}
+.errrow .bar{flex:1}
+.errrow .n{width:48px;text-align:right;font-family:var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
 
 /* 积分额度：大字卡片，一眼看懂还剩多少 */
 .cr{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
@@ -191,6 +210,60 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .big3 .card .v{font-size:26px}
 .big3 .card .v.sm{font-size:21px}
 .big3 .card .v.xs{font-size:17px}
+
+/* 额度总览：1 张主卡 + 3 张副卡。
+   原来是 7 张等宽卡片平铺，每个数字都只有 21px、权重完全一样 ——
+   用户得先把 7 个都读完才知道该看哪个。现在只让「剩余积分」当主角，
+   其余三张各回答一个问题：花了多少 / 签没签 / 还能搜几次。 */
+.kpis{display:grid;grid-template-columns:minmax(300px,1.5fr) repeat(3,minmax(168px,1fr));gap:11px}
+.kpi{background:var(--panel2);border:1px solid var(--line2);border-radius:10px;padding:12px 14px;min-width:0}
+.kpi .k{font-size:11.5px;color:var(--muted);letter-spacing:.03em}
+.kpi .v{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:650;font-size:22px;line-height:1.25;margin-top:6px;
+  color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpi .v.big{font-size:34px;letter-spacing:-.02em;line-height:1.15}
+.kpi .v.ok{color:var(--ok)} .kpi .v.warn{color:var(--warn)} .kpi .v.err{color:var(--err)}
+.kpi .v .u{font-family:var(--sans);font-size:12px;font-weight:400;color:var(--muted);margin-left:2px}
+.kpi .s{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.splitbar{display:flex;height:7px;border-radius:4px;overflow:hidden;background:var(--line);margin:11px 0 7px}
+.splitbar i{display:block;height:100%}
+.splitbar .plan{background:var(--accent)} .splitbar .bonus{background:var(--ok)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--muted)}
+.legend b{font-family:var(--mono);font-weight:600;color:var(--fg);font-variant-numeric:tabular-nums}
+.legend .dotc{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:5px;vertical-align:1px}
+.legend .dotc.plan{background:var(--accent)} .legend .dotc.bonus{background:var(--ok)}
+@media(max-width:1280px){.kpis{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){.kpis{grid-template-columns:1fr}}
+
+/* 顶部告警条：只有账号临期/失效时才出现，没有异常时整条不占位置 */
+.alert{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid var(--line-warn);background:var(--bg-warn);
+  border-radius:10px;padding:10px 13px;margin:0 0 14px;font-size:12.5px;line-height:1.6;color:var(--fg)}
+.alert.err{border-color:var(--line-err);background:var(--bg-err)}
+.alert .ic{flex:none;width:18px;height:18px;border-radius:50%;background:var(--warn);color:#fff;font-size:12px;font-weight:700;
+  display:flex;align-items:center;justify-content:center}
+.alert.err .ic{background:var(--err)}
+.alert .sp{flex:1;min-width:220px}
+.alert b{font-weight:600}
+.alert button{flex:none}
+
+/* 账号列表工具条：放在滚动容器外面 —— 轮询重绘表格时不会把搜索框一起换掉 */
+.ac-tool{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 15px;border-bottom:1px solid var(--line2)}
+.ac-tool input{max-width:300px}
+.ac-tool .seg button{white-space:nowrap}
+.ac-batch{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:8px 15px;border-bottom:1px solid var(--line2);background:var(--panel2)}
+.ac-batch .n{font-size:12px;color:var(--accent);font-weight:600;font-variant-numeric:tabular-nums}
+.ac-batch .sp{flex:1}
+.pick{display:inline-flex;align-items:center;flex:none}
+.pick input{width:14px;height:14px;accent-color:var(--accent);cursor:pointer;margin:0}
+.say{font-size:12.5px;color:var(--dim);margin-top:10px;line-height:1.7}
+/* 折叠块：实现细节默认收起，需要排查时再展开 */
+.fold>details>summary{cursor:pointer;list-style:none;padding:11px 15px;font-size:12.5px;font-weight:600;color:var(--fg);
+  display:flex;align-items:center;gap:8px;letter-spacing:.02em}
+.fold>details>summary::-webkit-details-marker{display:none}
+.fold>details>summary::before{content:"▸";color:var(--dim);font-size:11px;transition:transform .15s}
+.fold>details[open]>summary::before{transform:rotate(90deg)}
+.fold>details>summary:hover{background:var(--panel2)}
+button.danger{color:var(--err);border-color:var(--line-err)}
+button.danger:hover{background:var(--bg-err);border-color:var(--err);color:var(--err)}
 .empty{padding:26px;text-align:center;color:var(--dim);font-size:13px}
 /* 配置页里的「已忽略的账号」小列表 */
 .iglist{display:flex;flex-direction:column}
@@ -248,6 +321,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <aside>
   <div class="brand"><b>officeace2api</b><span id="ver">v-</span></div>
   <nav id="nav">
+    <a href="#overview" data-p="overview"><i>◎</i><span>概览</span></a>
     <a href="#accounts" data-p="accounts"><i>◉</i><span>账号池</span></a>
     <a href="#usage"    data-p="usage"><i>▦</i><span>用量</span></a>
     <a href="#credits"  data-p="credits"><i>◆</i><span>积分构成</span></a>
@@ -257,7 +331,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <a href="#settings" data-p="settings"><i>⚙</i><span>配置</span></a>
     <!-- 福利站导航：外部链接，不挂 data-p（它不是本服务的一个页面，点击也不走 hash 路由） -->
     <a class="ext" href="https://github.com/Q-shuang-dot/ai-coding-welfare" target="_blank" rel="noreferrer"
-       title="福利站导航 · AI 编码福利站合集（外链，新标签页打开）"><i>🎁</i><span>福利站导航</span><em>↗</em></a>
+       title="福利站导航 · AI 编码福利站合集（外链，新标签页打开）"><i>✦</i><span>福利站导航</span><em>↗</em></a>
   </nav>
   <div class="foot" id="foot"><span class="dot" id="footDot"></span><span id="footTxt">连接中…</span></div>
 </aside>
@@ -393,12 +467,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
   <!-- 号池 -->
   <div class="page on" id="p-accounts">
-    <h2 class="pg">账号池 <small id="acSub">本机发现 + 手工导入的账号，及其凭据</small>
+    <h2 class="pg">账号池 <small id="acSub">正在读取账号…</small>
       <span style="flex:1"></span>
       <button class="ghost" id="acScan">重新扫描</button>
       <button class="ghost" id="acExport" title="把本机所有账号凭据导出一个文件：换电脑时在新机器上导入，不用挨个重登">导出凭证</button>
-      <button class="ghost" id="acImportToggle">导入账号</button>
+      <button id="acImportToggle" title="扫码 / 登录导入一个新账号">导入账号</button>
     </h2>
+    <div class="alert" id="acAlert" style="display:none"></div>
     <section>
       <h3>积分额度（还剩多少）<span class="sp"></span>
         <button class="ghost mini" id="acCrRenew" title="用 refresh_token 换新 AK/SK">续期凭据</button>
@@ -407,11 +482,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
         <a href="#credits"><button class="ghost mini">看详情</button></a>
       </h3>
       <div class="body">
-        <div class="big3" id="acCrBig"></div>
-        <div class="say" id="acCrSay" style="font-size:12.5px;color:var(--dim);margin-top:10px;line-height:1.7"></div>
+        <div class="kpis" id="acCrBig"></div>
+        <div class="say" id="acCrSay"></div>
       </div>
     </section>
-    <section><div class="body grid" id="acCards"></div></section>
     <section id="acImportBox" style="display:none">
       <h3>手工导入账号</h3>
       <div class="body field">
@@ -427,19 +501,41 @@ button:disabled{opacity:.5;cursor:not-allowed}
       </div>
     </section>
     <section>
-      <h3>账号列表</h3>
+      <h3>账号列表<span class="sp"></span><span class="muted" id="acCount"></span></h3>
+      <div class="ac-tool">
+        <input id="acQ" type="search" placeholder="搜索账号 / ID / AK 指纹…" autocomplete="off" aria-label="搜索账号" />
+        <div class="seg" id="acSeg">
+          <button data-f="all" class="on">全部</button>
+          <button data-f="ok">正常</button>
+          <button data-f="soon">临期</button>
+          <button data-f="dead">失效</button>
+          <button data-f="off">停用</button>
+        </div>
+      </div>
+      <div class="ac-batch" id="acBatch" style="display:none">
+        <span class="n" id="acBatchN"></span>
+        <button class="mini" data-batch="renew" title="用 refresh_token 给选中的号换新 AK/SK">续期</button>
+        <button class="ghost mini" data-batch="claim" title="给选中的号签到">签到</button>
+        <button class="ghost mini" data-batch="disable">停用</button>
+        <button class="ghost mini" data-batch="enable">启用</button>
+        <span class="sp"></span>
+        <button class="ghost mini" data-batch="all">全选当前</button>
+        <button class="ghost mini" data-batch="clear">取消</button>
+      </div>
       <div class="body scroll" id="acBody"></div>
     </section>
-    <section>
-      <h3>账号数据来源</h3>
-      <div class="body hint">
-        一个账号在磁盘上散落在三处，本服务把它们拼成一条记录（只读不写）：<br />
-        ① 上游地址与鉴权：<code>~/.office-claw/.jiuwenclaw/config/routing_state/users/&lt;账号ID&gt;/models.json</code><br />
-        ② 临时 AK/SK 与过期时间：<code>&lt;安装目录&gt;\packages\api\.config\secure-config-nodejs\oauth-&lt;账号ID&gt;.json</code><br />
-        ③ 模型目录：<code>~/.office-claw/users/&lt;账号ID&gt;/model.json</code><br />
-        ② 用 Windows DPAPI（当前用户）解开安装密钥，再用 AES-256-GCM 解密档案，因此能显示准确的剩余时长。<br />
-        账号 ID 形如 <code>&lt;华为云账号ID&gt;:&lt;IAM用户ID&gt;</code>，就是 OfficeAce 自己的目录名。
-      </div>
+    <section class="fold">
+      <details>
+        <summary>账号数据来源（实现细节）</summary>
+        <div class="body hint">
+          一个账号在磁盘上散落在三处，本服务把它们拼成一条记录（只读不写）：<br />
+          ① 上游地址与鉴权：<code>~/.office-claw/.jiuwenclaw/config/routing_state/users/&lt;账号ID&gt;/models.json</code><br />
+          ② 临时 AK/SK 与过期时间：<code>&lt;安装目录&gt;\packages\api\.config\secure-config-nodejs\oauth-&lt;账号ID&gt;.json</code><br />
+          ③ 模型目录：<code>~/.office-claw/users/&lt;账号ID&gt;/model.json</code><br />
+          ② 用 Windows DPAPI（当前用户）解开安装密钥，再用 AES-256-GCM 解密档案，因此能显示准确的剩余时长。<br />
+          账号 ID 形如 <code>&lt;华为云账号ID&gt;:&lt;IAM用户ID&gt;</code>，就是 OfficeAce 自己的目录名。
+        </div>
+      </details>
     </section>
   </div>
 
@@ -600,6 +696,14 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div class="page" id="p-usage">
     <h2 class="pg">用量统计 <small id="usSub"></small><span style="flex:1"></span><button class="ghost" id="usReset">重置</button></h2>
     <section><div class="body grid" id="usCards"></div></section>
+    <section>
+      <h3>近 7 天<span class="sp"></span><span class="muted" id="usTrendSub"></span></h3>
+      <div class="body"><div class="trend" id="usTrend"></div></div>
+    </section>
+    <section>
+      <h3>失败原因<span class="sp"></span><span class="muted" id="usErrSub"></span></h3>
+      <div class="body" id="usErrors"></div>
+    </section>
     <section><h3>按模型</h3><div class="body scroll" id="usModels"></div></section>
     <section><h3>按 API Key</h3><div class="body scroll" id="usKeys"></div></section>
   </div>
@@ -795,7 +899,7 @@ let S = null;            // 最新 state
 // 「模型管理」里要不要把「打不通」的模型也列出来（默认不列）。
 // 不能塞进 S —— poll() 每轮把 S 整个换掉，放进去开关一秒就被重置。
 let mdlShowUnavail = false;
-let page = "accounts";
+let page = "overview";
 let callFilter = "all";
 // 默认档位是 INFO，不是「全部」。
 //
@@ -911,10 +1015,11 @@ async function poll() {
     S = await api("admin/api/state");
     // 拿到 state 之后再补日志增量（只多一个小请求，且多数时候是空）
     await pullLogs();
-    // 侧边栏常驻一行：还剩多少积分，随时能瞄一眼
+    // 侧边栏常驻一行：还剩多少积分 + 跑了多久，随时能瞄一眼
     const cs = S.credits && S.credits.summary;
-    const up = Math.floor((S.health.uptimeMs || 0) / 1000);
-    setFoot(cs && cs.ok ? `剩 ${num(cs.remaining)} 积分 · up ${up}s` : `运行中 · up ${up}s`, "on");
+    const upMin = Math.floor((S.health.uptimeMs || 0) / 60000);
+    const upTxt = upMin >= 60 ? Math.floor(upMin / 60) + "h" + String(upMin % 60).padStart(2, "0") + "m" : upMin + "m";
+    setFoot(cs && cs.ok ? `剩 ${num(Math.round(cs.remaining))} 积分 · 运行 ${upTxt}` : `运行中 · ${upTxt}`, "on");
     const h = $("#ovHealth");
     if (h) { h.className = "pill ok"; h.textContent = "运行中"; }
     renderAll();
@@ -945,16 +1050,17 @@ function renderAll() {
 /* ---------------- 概览 ---------------- */
 function renderOverview() {
   const t = (S.usage && S.usage.totals) || {};
-  const okRate = t.requests ? Math.round((t.ok / t.requests) * 100) : 100;
+  const cs = creditsState(), sm = cs.summary || {};
+  const okRate = t.requests ? Math.round((t.ok / t.requests) * 100) : null;
   const up = S.health.uptimeMs || 0;
   $("#ovSub").textContent = "已运行 " + Math.floor(up / 3600000) + " 小时 " + Math.floor(up / 60000) % 60 + " 分";
   $("#ovCards").innerHTML = [
     ["凭据", S.pool.length, S.pool.filter((c) => !c.cooldownMsLeft).length + " 条可用", S.pool.length ? "ok" : "err"],
     ["可用模型", S.models.length, S.models.filter((m) => m.source === "alias").length + " 个别名", "ok"],
     ["请求总数", num(t.requests || 0), "成功 " + num(t.ok || 0) + " / 失败 " + num(t.failed || 0), (t.failed ? "warn" : "ok")],
-    ["成功率", okRate + "%", "全量统计", okRate >= 95 ? "ok" : "warn"],
-    ["输入 tokens", num(t.prompt_tokens || 0), "", ""],
-    ["输出 tokens", num(t.completion_tokens || 0), "合计 " + num(t.total_tokens || 0), ""],
+    ["成功率", okRate === null ? "—" : okRate + "%", okRate === null ? "还没有请求" : "全量统计", okRate === null ? "" : (okRate >= 95 ? "ok" : "warn")],
+    ["剩余积分", fmtP(sm.remaining || 0), (sm.ok || 0) + " 个号读到" + (sm.failed ? " · " + sm.failed + " 个失败" : ""), sm.failed ? "warn" : "ok"],
+    ["今日签到", (sm.claimedWithGain || 0) + " / " + (sm.accounts || 0), "累计领到 " + fmtP(sm.claimTotal || 0), ""],
   ].map(([k, v, s, c]) => '<div class="card ' + c + '"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div><div class="s">' + esc(s || "") + '</div></div>').join("");
 
   const creds = S.pool || [];
@@ -1486,15 +1592,56 @@ function renderUsage() {
   $("#usSub").textContent = u.since ? "统计自 " + new Date(u.since).toLocaleString("zh-CN") : "";
   const cached = Number(t.cached_tokens) || 0;
   const cachedPct = t.prompt_tokens ? Math.round((cached / t.prompt_tokens) * 100) : 0;
+  const okRate = t.requests ? Math.round((t.ok / t.requests) * 100) : null;
   $("#usCards").innerHTML = [
-    ["请求总数", num(t.requests || 0), ""],
-    ["成功", num(t.ok || 0), "ok"],
-    ["失败", num(t.failed || 0), (t.failed ? "err" : "")],
-    ["总 tokens", num(t.total_tokens || 0), ""],
-    ["输入 / 输出", num(t.prompt_tokens || 0) + " / " + num(t.completion_tokens || 0), ""],
+    ["请求总数", num(t.requests || 0), "成功 " + num(t.ok || 0) + " / 失败 " + num(t.failed || 0), t.failed ? "warn" : ""],
+    ["成功率", okRate === null ? "—" : okRate + "%", okRate === null ? "还没有请求" : (okRate >= 95 ? "正常" : "有失败，看下方原因"), okRate === null ? "" : (okRate >= 95 ? "ok" : "warn")],
+    ["总 tokens", num(t.total_tokens || 0), "输入 " + num(t.prompt_tokens || 0) + " / 输出 " + num(t.completion_tokens || 0), ""],
     ["缓存命中", cachedPct + "%", "cached " + num(cached), cachedPct > 0 ? "ok" : ""],
-    ["覆盖模型", String(models.length), ""],
+    ["覆盖模型", String(models.length), models.filter(([, m]) => m.ok).length + " 个成功调用过", ""],
   ].map(([k, v, s, c]) => card(k, v, s, c)).join("");
+
+  // 近 7 天：按本机时区分桶，缺失的日期补 0。
+  const daily = u.daily || {};
+  const days = [];
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    d.setDate(d.getDate() - i);
+    const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    days.push({
+      key,
+      label: (d.getMonth() + 1) + "/" + d.getDate(),
+      row: daily[key] || { requests: 0, ok: 0, failed: 0 },
+    });
+  }
+  const weekReq = days.reduce((n, d) => n + d.row.requests, 0);
+  $("#usTrendSub").textContent = weekReq ? "近 7 天 " + num(weekReq) + " 次请求" : "";
+  const trendEl = $("#usTrend");
+  trendEl.style.height = weekReq ? "" : "auto";
+  const maxDay = Math.max(1, ...days.map((d) => d.row.requests));
+  $("#usTrend").innerHTML = weekReq ? days.map((d) => {
+    const r = d.row;
+    // 柱子总高按当天请求量算；红绿按成功/失败占比切分。
+    // 以前每根柱子都铺满 92px 灰底，少的那截看起来像「另一种状态」。
+    const totalH = Math.round((r.requests / maxDay) * 92);
+    const badH = r.requests ? Math.round((r.failed / r.requests) * totalH) : 0;
+    const okH = Math.max(0, totalH - badH);
+    return '<div class="day" title="' + d.key + "：" + r.requests + " 次请求，失败 " + r.failed + '">' +
+      '<div class="n">' + (r.requests || "") + "</div>" +
+      '<div class="col"><i class="bad" style="height:' + badH + 'px"></i><i class="ok" style="height:' + okH + 'px"></i></div>' +
+      '<div class="d">' + d.label + "</div></div>";
+  }).join("") : empty("还没有按天数据；新版统计从下一次请求开始记。");
+
+  // 失败原因：把 401/429/超时/网络这些分开，别只给一个「失败 12」。
+  const errors = Object.entries(u.errors || {}).sort((a, b) => b[1] - a[1]);
+  const maxErr = Math.max(1, ...errors.map(([, n]) => n));
+  $("#usErrSub").textContent = t.failed ? "共 " + num(t.failed) + " 次失败" : "";
+  $("#usErrors").innerHTML = errors.length ? errors.map(([k, n]) => (
+    '<div class="errrow"><span class="k">' + esc(k) + '</span>' +
+    '<div class="bar"><i class="err" style="width:' + Math.max(3, Math.round((n / maxErr) * 100)) + '%"></i></div>' +
+    '<span class="n">' + num(n) + "</span></div>"
+  )).join("") : empty(t.failed ? "失败记录产生于旧版本统计，下一次失败开始分类。" : "还没有失败记录。");
 
   const maxReq = Math.max(1, ...models.map(([, m]) => m.requests));
   $("#usModels").innerHTML = models.length ? tbl(
@@ -1702,7 +1849,6 @@ function copy(text, tip) {
 }
 
 /* ---------------- 号池 ---------------- */
-const HEALTH_TAG = { ok: "ok", expired: "err", disabled: "warn", nocred: "err", unknown: "warn" };
 
 function accounts() { return (S && S.accounts) || []; }
 function accountsStatus() { return (S && S.accountsStatus) || {}; }
@@ -1720,7 +1866,11 @@ function creditTone(points) {
 
 function fmtP(n) {
   const v = Number(n) || 0;
-  return Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : v.toFixed(2);
+  // 千分位：13013.93 读起来要比 13013.93 快一个数量级（页面上到处是四位数积分）
+  return v.toLocaleString("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.abs(v - Math.round(v)) < 0.005 ? 0 : 2,
+  });
 }
 
 /**
@@ -1751,40 +1901,67 @@ function shortWhen(ts) {
 }
 
 function humanLeft(ms) {
-  if (!ms) return "-";
+  if (ms === null || ms === undefined || isNaN(ms)) return "-";
   if (ms <= 0) return "已过期";
-  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  const totalMin = Math.floor(ms / 60000);
+  if (totalMin < 1) return "不到 1 分钟";
+  if (totalMin < 60) return totalMin + " 分钟";
+  const h = Math.floor(totalMin / 60), m = totalMin % 60;
   if (h >= 24) return Math.floor(h / 24) + " 天 " + (h % 24) + " 小时";
-  if (h > 0) return h + " 小时 " + m + " 分";
-  return m + " 分";
+  return h + " 小时" + (m ? " " + m + " 分" : "");
 }
 
-/** 总览三小卡 + 一句话 */
+/** 额度总览：一张主卡 + 三张副卡，布局说明见 .kpis 的注释 */
 function creditOverview(elBig, elSay) {
   const cs = creditsState(), sm = cs.summary || {}, items = cs.items || [];
   const okOnes = items.filter((i) => i.ok && i.points);
-  const tone = okOnes.length ? creditTone({
-    total: sm.total, remaining: sm.remaining,
-  }) : "warn";
+  const enabled = items.filter((i) => i.enabled).length;
+  const plan = okOnes.reduce((n, i) => n + (i.points.planRemaining || 0), 0);
+  const bonus = okOnes.reduce((n, i) => n + (i.points.bonusRemaining || 0), 0);
+  const remaining = sm.remaining || 0, total = sm.total || 0, used = sm.used || 0;
+  const usedPct = total ? Math.min(100, (used / total) * 100) : 0;
+  const tone = okOnes.length ? creditTone({ total, remaining }) : "warn";
+  // 主卡里的堆叠条：套餐和奖励各占剩余积分的多少。分母用 remaining 而不是 total ——
+  // 用户关心的是「手里这些由什么构成」，不是「历史总额里套餐占几成」。
+  const planPct = remaining > 0 ? Math.max(0, Math.min(100, (plan / remaining) * 100)) : 0;
+  const claimed = sm.claimedToday || 0;
+  const claimTone = enabled && claimed >= enabled ? "ok" : "warn";
 
-  $(elBig).innerHTML = [
-    ["剩余积分合计", fmtP(sm.remaining || 0), tone === "ok" ? "还很充裕" : tone === "warn" ? "用掉不少了" : "快见底了", tone],
-    ["其中套餐积分", fmtP(okOnes.reduce((n, i) => n + (i.points.planRemaining || 0), 0)), "套餐自带，先到期先用", ""],
-    ["其中奖励积分", fmtP(okOnes.reduce((n, i) => n + (i.points.bonusRemaining || 0), 0)), "签到/活动送的", ""],
-    ["已用 / 总共", fmtP(sm.used || 0) + " / " + fmtP(sm.total || 0), "占比 " + (sm.total ? ((sm.used / sm.total) * 100).toFixed(1) : "0") + "%", ""],
-    ["联网搜索剩余", num(sm.searchesRemaining || 0) + " 次", "额度和积分分开算", ""],
-    ["今日签到", (sm.claimedToday || 0) + " / " + items.filter((i) => i.enabled).length, "累计领到 " + fmtP(sm.claimTotal || 0) + " 积分", (sm.claimedToday ? "ok" : "warn")],
-    ["读到额度的号", (sm.ok || 0) + " / " + (sm.accounts || 0), sm.failed ? "⚠ " + sm.failed + " 个读不到" : "全部成功", sm.failed ? "warn" : "ok"],
-  ].map(([k, v, s, c]) => card(k, v, s, c)).join("");
+  $(elBig).innerHTML =
+    '<div class="kpi">' +
+      '<div class="k">剩余积分</div>' +
+      '<div class="v big ' + tone + '">' + fmtP(remaining) + '</div>' +
+      '<div class="splitbar" title="套餐 ' + esc(fmtP(plan)) + ' 积分 · 奖励 ' + esc(fmtP(bonus)) + ' 积分">' +
+        '<i class="plan" style="width:' + planPct.toFixed(1) + '%"></i>' +
+        '<i class="bonus" style="width:' + (100 - planPct).toFixed(1) + '%"></i>' +
+      '</div>' +
+      '<div class="legend"><span><i class="dotc plan"></i>套餐 <b>' + fmtP(plan) + '</b></span>' +
+        '<span><i class="dotc bonus"></i>奖励 <b>' + fmtP(bonus) + '</b></span></div>' +
+      '<div class="s">' + (okOnes.length ? okOnes.length + ' 个号合计' : '还没读到额度') + '</div>' +
+    '</div>' +
+    '<div class="kpi">' +
+      '<div class="k">已用 / 总额</div>' +
+      '<div class="v">' + fmtP(used) + '<span class="u"> / ' + fmtP(total) + '</span></div>' +
+      '<div class="bar"><i class="' + tone + '" style="width:' + usedPct.toFixed(1) + '%"></i></div>' +
+      '<div class="s">已用 ' + usedPct.toFixed(1) + '%</div>' +
+    '</div>' +
+    '<div class="kpi">' +
+      '<div class="k">今日签到</div>' +
+      '<div class="v ' + claimTone + '">' + claimed + ' / ' + enabled + '</div>' +
+      '<div class="s">累计领到 ' + fmtP(sm.claimTotal || 0) + ' 积分</div>' +
+    '</div>' +
+    '<div class="kpi">' +
+      '<div class="k">联网搜索剩余</div>' +
+      '<div class="v">' + num(sm.searchesRemaining || 0) + '<span class="u"> 次</span></div>' +
+      '<div class="s">额度与积分分开计算</div>' +
+    '</div>';
 
   const lines = [];
   if (!items.length) {
-    lines.push("号池里还没有账号。到「号池」页点「换个账号登录」，用你自己的华为云账号登录一次就行（不需要装 OfficeAce 桌面端）；已经有现成 baseUrl + Authorization 的话也可以直接「导入账号」。");
+    lines.push("号池里还没有账号。点右上角「导入账号」自己登一个（不需要 OfficeAce 桌面端），或从别的机器导一份凭据。");
   } else if (!okOnes.length) {
-    lines.push("还没读到积分。点右上角「刷新积分」试试；如果失败，多半是账号的临时凭据过期了，需要重新登录 OfficeAce。");
+    lines.push("⚠ 还没读到积分。点「刷新积分」；如果失败，多半是临时凭据过期了，需要重新登录一次。");
   } else {
-    lines.push("你一共有 <b style='color:var(--fg)'>" + fmtP(sm.remaining) + " 积分</b> 可以用来跑模型" +
-      (okOnes.length > 1 ? "（" + okOnes.length + " 个号加起来）" : "") + "。");
     const soon = okOnes.filter((i) => i.plan && i.plan.expiresAt && i.plan.expiresAt - Date.now() < 7 * 86400000);
     if (soon.length) {
       lines.push("⚠ 有 " + soon.length + " 个号的套餐 7 天内到期：" +
@@ -1795,71 +1972,268 @@ function creditOverview(elBig, elSay) {
     const bad = items.filter((i) => i.loaded && !i.ok);
     if (bad.length) lines.push("⚠ " + bad.length + " 个号读不到额度：" + bad.map((i) => esc(i.label || i.userName) + "（" + esc(i.error) + "）").join("；") + "。");
   }
-  lines.push("数据每 " + (sm.ttlSeconds || 300) + " 秒算一次缓存" +
-    (sm.lastRefreshAt ? "，上次刷新 " + new Date(sm.lastRefreshAt).toLocaleTimeString("zh-CN") : "") + "。");
+  // 读数状态单独收在最后一行：它回答「这些数字可不可信」，不和额度本身抢位置
+  lines.push('<span class="dim">额度读取 ' + (sm.ok || 0) + " / " + (sm.accounts || items.length) +
+    (sm.lastRefreshAt ? " · 上次刷新 " + new Date(sm.lastRefreshAt).toLocaleTimeString("zh-CN") : "") +
+    " · 缓存 " + (sm.ttlSeconds || 300) + " 秒</span>");
   $(elSay).innerHTML = lines.map((l) => "<div>" + l + "</div>").join("");
+}
+
+let acQ = "";
+let acFilter = "all";
+const AC_TAB = { all: "全部", ok: "正常", soon: "临期", dead: "失效", off: "停用" };
+const acSel = new Set();
+let acShown = [];
+
+/** 近 7 天消耗迷你柱：每根柱子代表一天，越高说明这天用掉的积分越多。 */
+function acSpark(c) {
+  const items = Array.isArray(c && c.usage && c.usage.items) ? c.usage.items : [];
+  const last = items.slice(-7);
+  if (!last.length) return "";
+  const max = Math.max(...last.map((x) => Number(x.consumed) || 0), 1);
+  return '<span class="pt-spark" title="近 7 天消耗（左旧右新）">' + last.map((x) => {
+    const v = Number(x.consumed) || 0;
+    const h = Math.max(2, Math.round((v / max) * 16));
+    return '<i class="' + (v > 0 ? "on" : "") + '" style="height:' + h + 'px" title="' +
+      esc(x.day + " · " + fmtP(v) + " 积分") + '"></i>';
+  }).join("") + "</span>";
+}
+
+/** 把上游的长句「按近 7 天平均（375 积分/天），还能用约 11 天」压成短标签。 */
+function acRunsOut(c) {
+  if (!c || !c.ok || !c.runsOutText) return "";
+  const m = /约\s*(\d+)\s*天/.exec(c.runsOutText);
+  return m ? "约 " + m[1] + " 天" : "";
+}
+
+/** 批量操作条：只在有勾选时出现，不勾选时不占版面。 */
+function renderAcBatch() {
+  const box = $("#acBatch");
+  if (!box) return;
+  const n = acSel.size;
+  box.style.display = n ? "flex" : "none";
+  const nEl = $("#acBatchN");
+  if (nEl) nEl.textContent = "已选 " + n + " 个";
+  const all = acShown.length > 0 && acShown.every((a) => acSel.has(a.id));
+  const allBtn = box.querySelector('[data-batch="all"]');
+  if (allBtn) allBtn.textContent = all ? "取消全选" : "全选当前";
+}
+
+async function acBatchAct(kind) {
+  if (kind === "clear") { acSel.clear(); renderAccounts(); return; }
+  if (kind === "all") {
+    const all = acShown.length > 0 && acShown.every((a) => acSel.has(a.id));
+    if (all) acSel.clear();
+    else acShown.forEach((a) => acSel.add(a.id));
+    renderAccounts();
+    return;
+  }
+
+  const ids = [...acSel];
+  if (!ids.length) return;
+  if (kind === "disable" && !confirm("停用选中的 " + ids.length + " 个账号？停用后不再参与转发，随时可以再启用。")) return;
+
+  const box = $("#acBatch");
+  if (box) box.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  const canBatch = !!(S.health && S.health.batchActions);
+  try {
+    if (kind === "renew") {
+      toast("正在批量续期 " + ids.length + " 个账号…");
+      let results = [];
+      if (canBatch) {
+        const r = await api("admin/api/credits/refresh-credential", { method: "POST", json: { ids } });
+        results = r.results || [];
+      } else {
+        for (const id of ids) {
+          const r = await api("admin/api/credits/refresh-credential", { method: "POST", json: { id } });
+          results.push(...(r.results || []));
+        }
+      }
+      const ok = results.filter((x) => x.ok && !x.skipped).length;
+      const skipped = results.filter((x) => x.skipped).length;
+      const bad = results.filter((x) => !x.ok && !x.skipped);
+      toast("续期完成：" + ok + " 个成功" + (skipped ? "，" + skipped + " 个凭据还在有效期，已跳过" : "") +
+        (bad.length ? "，" + bad.length + " 个失败：" + bad[0].error : ""), bad.length ? "warn" : "ok");
+    } else if (kind === "claim") {
+      toast("正在给 " + ids.length + " 个账号签到…");
+      let results = [], gained = 0;
+      if (canBatch) {
+        const r = await api("admin/api/credits/claim", { method: "POST", json: { ids } });
+        results = r.results || [];
+        gained = r.gained || 0;
+      } else {
+        for (const id of ids) {
+          const r = await api("admin/api/credits/claim", { method: "POST", json: { id } });
+          if (r.results) results.push(...r.results);
+          else results.push({ id, ...r });
+          gained += r.gained || 0;
+        }
+      }
+      const failed = results.filter((x) => !x.ok && !x.skipped);
+      const skipped = results.filter((x) => x.skipped).length;
+      if (failed.length) toast("签到完成，但 " + failed.length + " 个失败：" + failed[0].error, "warn");
+      else if (gained > 0) toast("签到完成，共领到 " + fmtP(gained) + " 积分" + (skipped ? "，" + skipped + " 个今天已签" : ""), "ok");
+      else toast("这些号今天都签过了，没有新的积分可领");
+    } else {
+      const enabled = kind === "enable";
+      for (const id of ids) {
+        await api("admin/api/accounts/enable", { method: "POST", json: { id, enabled } });
+      }
+      toast((enabled ? "已启用 " : "已停用 ") + ids.length + " 个账号", "ok");
+    }
+    acSel.clear();
+    await poll();
+  } catch (e) {
+    toast(e.message, "err");
+  } finally {
+    if (box) box.querySelectorAll("button").forEach((b) => (b.disabled = false));
+  }
+}
+
+/**
+ * 一行只允许出现一个状态结论。
+ *
+ * 后端 health.label 里混了「动作」和「状态」（「已自动续期」），表格里再并排一个
+ * 倒计时，就会出现「已自动续期 / 凭据剩 0 小时 / 档案那份已过期」三句话互相打架。
+ * 这里按「能不能转发、要不要动手」重新归成四类，动作交给操作列。
+ */
+function acState(a) {
+  if (!a.enabled) return { key: "off", label: "已停用", tone: "warn", detail: "停用的账号不进连接池" };
+  const h = a.health || {};
+  if (h.state === "nocred") return { key: "dead", label: "无凭据", tone: "err", detail: h.detail || "该账号还没产生凭据" };
+  if (h.state === "expired") {
+    // 签名凭据过期但 Basic 凭据还在：还能转发，只是读不了积分
+    const usable = /^可用/.test(h.label || "");
+    return usable
+      ? { key: "soon", label: "待续期", tone: "warn", detail: "转发正常，积分/签到读不到" }
+      : { key: "dead", label: "已过期", tone: "err", detail: "需要重新登录授权" };
+  }
+  if (h.state === "unknown") return { key: "soon", label: "状态未知", tone: "warn", detail: h.detail || "拿不到过期时间" };
+  const left = a.expiresAt ? a.expiresAt - Date.now() : null;
+  // 倒计时自己算：后端 detail 是给人看的旧文案，可能和 expiresAt 差一分钟，
+  // 两处并排出现就会出现「已自动续期 / 剩 0 小时」这种自相矛盾。
+  const refreshed = a.credentialSource === "refreshed" ? "已自动续期 · " : "";
+  if (left === null) return { key: "ok", label: "可用", tone: "ok", detail: "" };
+  if (left <= 0) return { key: "soon", label: "待续期", tone: "warn", detail: "临时凭据已过期，转发不受影响" };
+  if (left <= 2 * 3600000) {
+    return { key: "soon", label: "临期", tone: "warn", detail: refreshed + "剩 " + humanLeft(left) };
+  }
+  return { key: "ok", label: "可用", tone: "ok", detail: refreshed + "剩 " + humanLeft(left) };
+}
+
+/** 顶部告警条：把「马上要动手」的事从表格里提到第一屏 */
+function renderAcAlert(list, states) {
+  const box = $("#acAlert");
+  if (!box) return;
+  const now = Date.now();
+  const soon = list.filter((a) => a.enabled && states.get(a.id).key === "soon" && a.expiresAt);
+  const fresh = soon.filter((a) => a.expiresAt > now);
+  const stale = soon.filter((a) => a.expiresAt <= now);
+  const dead = list.filter((a) => a.enabled && states.get(a.id).key === "dead");
+  if (!soon.length && !dead.length) {
+    box.style.display = "none";
+    box.innerHTML = "";
+    return;
+  }
+  const parts = [];
+  if (dead.length) {
+    parts.push("<div><b>" + dead.length + " 个账号已失效</b>，模型转发和积分都用不了，需要重新登录授权。</div>");
+  }
+  if (fresh.length) {
+    // 取最近的那个说，用户只需要知道「最急的是多久」
+    const min = Math.min.apply(null, fresh.map((a) => a.expiresAt - now));
+    parts.push("<div><b>" + fresh.length + " 个账号的临时凭据将在 " + humanLeft(min) +
+      "内到期</b>，只影响读积分/签到，模型转发不受影响。</div>");
+  }
+  if (stale.length) {
+    parts.push("<div><b>" + stale.length + " 个账号的临时凭据已过期</b>，积分/签到读不到，模型转发仍正常。</div>");
+  }
+  box.className = "alert" + (dead.length ? " err" : "");
+  box.innerHTML = '<span class="ic">!</span><div class="sp">' + parts.join("") + "</div>" +
+    (soon.length ? '<button class="ghost mini" data-alert="renew">立即续期</button>' : "") +
+    (dead.length ? '<button class="mini" data-alert="auth">去登录</button>' : "");
+  box.style.display = "flex";
 }
 
 function renderAccounts() {
   const list = accounts(), st = accountsStatus();
-  $("#acSub").textContent = "共 " + (st.total || 0) + " 个账号 · 启用 " + (st.enabled || 0) +
-    " · 有效 " + (st.healthy || 0) + " · 凭据 " + (st.credentials || 0) + " 条" +
-    (st.dpapi && st.dpapi.available ? "" : " · ⚠ DPAPI 不可用");
+  // 账号被移除/重新扫描后，选中集合里可能留下不存在的 id；先剔掉，避免批量操作报「账号不存在」。
+  const liveIds = new Set(list.map((a) => a.id));
+  for (const id of [...acSel]) if (!liveIds.has(id)) acSel.delete(id);
+  const states = new Map();
+  const n = { all: list.length, ok: 0, soon: 0, dead: 0, off: 0 };
+  for (const a of list) {
+    const s = acState(a);
+    states.set(a.id, s);
+    n[s.key] = (n[s.key] || 0) + 1;
+  }
+
+  // 标题下的这行是「整个池子的体检结果」，不再用 6 张卡重复说一遍
+  $("#acSub").innerHTML = "共 " + n.all + " 个账号 · 可用 " + (n.ok + n.soon) + " · 凭据 " + (st.credentials || 0) + " 条" +
+    (n.dead ? ' · <b style="color:var(--err)">失效 ' + n.dead + "</b>" : "") +
+    (st.dpapi && st.dpapi.available ? "" : ' · <b style="color:var(--warn)">DPAPI 不可用</b>');
 
   creditOverview("#acCrBig", "#acCrSay");
+  renderAcAlert(list, states);
 
-  $("#acCards").innerHTML = [
-    ["账号总数", st.total || 0, "本机发现 + 手工导入", ""],
-    ["已启用", st.enabled || 0, "停用的不进连接池", st.enabled ? "ok" : "warn"],
-    ["凭据有效", st.healthy || 0, "临时 AK/SK 未过期", st.healthy ? "ok" : "warn"],
-    ["已过期", st.expired || 0, "需要重新授权", st.expired ? "err" : "ok"],
-    ["可用凭据", st.credentials || 0, "已启用账号的凭据合计", ""],
-    ["DPAPI", st.dpapi && st.dpapi.available ? "可用" : "不可用", "决定能否读出过期时间", st.dpapi && st.dpapi.available ? "ok" : "warn"],
-  ].map(([k, v, s, c]) => card(k, v, s, c)).join("");
+  $$("#acSeg button").forEach((b) => {
+    const k = b.dataset.f;
+    b.textContent = AC_TAB[k] + (n[k] ? " " + n[k] : "");
+  });
 
+  const q = acQ.trim().toLowerCase();
+  const shown = list.filter((a) => {
+    const s = states.get(a.id);
+    if (acFilter !== "all" && s.key !== acFilter) return false;
+    if (!q) return true;
+    return [a.label, a.userName, a.short, a.id, a.keyFingerprint]
+      .filter(Boolean).some((v) => String(v).toLowerCase().includes(q));
+  });
+  $("#acCount").textContent = shown.length === list.length ? "共 " + list.length + " 个" : "显示 " + shown.length + " / " + list.length;
+  acShown = shown;
+  renderAcBatch();
   if (!list.length) {
-    $("#acBody").innerHTML = empty("号池为空。点右上角「换个账号登录」自己登一个（不需要 OfficeAce 桌面端），或点「导入账号」。");
+    $("#acBody").innerHTML = empty("号池为空。点右上角「导入账号」自己登一个（不需要 OfficeAce 桌面端），或从别的机器导一份凭据。");
+    return;
+  }
+  if (!shown.length) {
+    $("#acBody").innerHTML = empty("没有匹配的账号。清空搜索，或切回「全部」。");
     return;
   }
 
-  const rows = list.map((a) => {
-    const left = a.expiresAt ? a.expiresAt - Date.now() : 0;
-    // 四个操作按钮横着排一行：.ops 是 flex + nowrap，列宽也留够了 226px，
-    // 窗口再窄也只是横向滚，不会把按钮挤成 2×2。
-    const ops = '<div class="ops">' +
-      '<button class="ghost mini" data-ac="test" data-id="' + esc(a.id) + '">测活</button>' +
-      '<button class="ghost mini" data-ac="rename" data-id="' + esc(a.id) + '">改名</button>' +
-      '<button class="ghost mini" data-ac="toggle" data-id="' + esc(a.id) + '">' + (a.enabled ? "停用" : "启用") + "</button>" +
-      '<button class="ghost mini" data-ac="remove" data-id="' + esc(a.id) + '">删除</button></div>';
+  const now = Date.now();
+  const rows = shown.map((a) => {
+    const s = states.get(a.id);
+    const left = a.expiresAt ? a.expiresAt - now : null;
 
-    // ① 账号：别名 + 华为账号 + 账号 ID。
-    //    ID 是 <华为云账号ID>:<IAM用户ID>，64 个字符，铺开能把整张表挤变形 ——
-    //    只留头尾，全文挂 title；华为账号名和别名一样时不重复显示。
+    // ① 账号：别名 + 华为账号 + 账号 ID + 来源。
+    //    来源只留一个结论（本机发现 / 手工导入），四个内部文件名收进 title，
+    //    常驻在行里只是噪音。
     const nm = a.label || a.short;
+    const srcTags = (a.sources || []).join(" · ");
     const identity =
-      '<div class="acc-nm"><span class="ell" title="' + esc(nm) + '">' + esc(nm) + "</span>" +
-        (a.enabled ? "" : '<span class="tag warn">已停用</span>') + "</div>" +
+      '<div class="acc-nm">' +
+        '<label class="pick" title="选择这个账号"><input type="checkbox" data-pick="' + esc(a.id) + '"' +
+          (acSel.has(a.id) ? " checked" : "") + " /></label>" +
+        '<span class="ell" title="' + esc(nm) + '">' + esc(nm) + "</span></div>" +
       (a.userName && a.userName !== nm
         ? '<div class="acc-sub mt" title="华为账号 ' + esc(a.userName) + '">' + esc(a.userName) + "</div>"
         : "") +
-      '<div class="acc-sub mt" title="' + esc(a.id) + '">' + esc(midId(a.id)) + "</div>";
+      '<div class="acc-sub mt" title="' + esc(a.id) + '">' + esc(midId(a.id)) + "</div>" +
+      '<div class="acc-src" title="' + esc(srcTags) + '"><span class="tag">' +
+        ((a.sources || []).includes("manual") ? "手工导入" : "本机发现") + "</span></div>";
 
-    // ② 状态：标签 + 一句话
+    // ② 状态：标签 + 一句话，只给一个结论
     const status =
-      '<span class="tag ' + (HEALTH_TAG[a.health.state] || "") + '">' + esc(a.health.label) + "</span>" +
-      (a.health.detail
-        ? '<div class="acc-sub mt" title="' + esc(a.health.detail) + '">' + esc(a.health.detail) + "</div>"
-        : "");
+      '<span class="tag ' + s.tone + '">' + esc(s.label) + "</span>" +
+      (s.detail ? '<div class="acc-sub mt" title="' + esc(s.detail) + '">' + esc(s.detail) + "</div>" : "");
 
-    // 剩余积分单元格：大字 + 进度条 + 一句话
+    // ③ 剩余积分
     const c = creditOf(a.id);
     let creditCell;
     if (!c || !c.loaded) {
-      creditCell = '<span class="muted">未查询</span>' +
-        '<div class="pt-meta">点「刷新积分」</div>';
+      creditCell = '<span class="muted">未查询</span><div class="pt-meta">点「刷新积分」</div>';
     } else if (!c.ok) {
-      // 内部错误串（"凭据已过期，续期失败：refresh_token 已经全部作废…"）有上百字，
-      // 直接铺在表格里会把整行撑得没法看。短句放明面，原文进 title。
       const short = creditErrShort(c.error);
       creditCell = '<span class="tag err">读不到</span>' +
         '<div class="pt-meta" title="' + esc(c.error || "") + '">' + esc(short) + "</div>";
@@ -1873,54 +2247,60 @@ function renderAccounts() {
         '<div class="pt-meta">已用 ' + esc(fmtP(p.used)) + " / " + esc(fmtP(p.total)) + "</div>" +
         '<div class="pt-meta" title="' + esc((c.plan ? c.plan.name : "") + (c.searches ? " · 搜索剩 " + c.searches.remaining : "")) + '">' +
           esc(c.plan ? c.plan.name : "") + (c.searches ? " · 搜索剩 " + c.searches.remaining : "") + "</div>";
+      const run = acRunsOut(c);
+      const spark = acSpark(c);
+      const trend = (spark ? '<span class="d" style="font-size:10.5px">近7天</span>' + spark : "") +
+        (run ? '<span class="d" title="' + esc(c.runsOutText) + '">' + esc(run) + "</span>" : "");
+      if (trend) creditCell += '<div class="pt-trend">' + trend + "</div>";
     }
 
-    // ③ 凭据剩余时长
-    // 磁盘档案上的过期时间会一直显示「已过期」（OfficeAce 不刷新它），
-    // 但续期后 a.expiresAt 已经被换成实际在用的那套，所以这里按实际值显示。
-    // 是不是续期来的，状态列已经写了，这里不重复。
-    //
-    // ⚠️ 签名凭据过期**不代表这个号废了** —— 转发走的是不失效的 Basic 凭据。
-    // 这种情况健康度标的是「可用 · 待续期」，这里也必须是中性文案，
-    // 不然同一行里会出现「可用 · 待续期」和红色「已过期」两个自相矛盾的结论。
+    // ④ 凭据剩余：倒计时归零也只影响读积分，不影响转发 —— 文案必须中性
     let leftCell;
-    if (a.health && a.health.state === "expired" && /^可用/.test(a.health.label || "")) {
-      leftCell = '<span class="pill warn">待续期</span><div class="acc-sub mt">转发不受影响</div>';
-    } else if (a.expiresAt) {
-      leftCell = '<span class="pill ' + (left > 0 ? "ok" : "err") + '"' +
-        ' title="这是临时 AK/SK 的寿命（华为云 STS 发下来只有几小时），只用来读积分/签到。' +
-        '转发模型走的是另一套不过期的网关密钥，所以这里倒计时归零也不影响对话。' +
-        '服务会在剩余 25% 的时候自动换一份新的，正常情况下你不需要管它。"' +
-        '>' + esc(humanLeft(left)) + "</span>" +
-        (a.credentialSource === "refreshed" && a.diskExpiresAt && a.diskExpiresAt < Date.now()
-          ? '<div class="acc-sub mt">档案那份已过期</div>'
-          : "");
+    if (left === null) {
+      leftCell = '<span class="muted">-</span><div class="acc-sub mt">没有到期时间</div>';
+    } else if (left > 0) {
+      const lt = left <= 2 * 3600000 ? "warn" : "ok";
+      leftCell = '<span class="pill ' + lt + '" title="临时 AK/SK 的寿命，只用来读积分/签到；' +
+        '模型转发走不过期的网关密钥，所以这里归零也不影响对话。服务会在剩 25% 时自动换新。">' +
+        esc(humanLeft(left)) + "</span>";
     } else {
-      leftCell = '<span class="muted">-</span>';
+      leftCell = '<span class="pill err" title="临时 AK/SK 已过期：积分读不到，但模型转发不受影响。点「续期」换一份。">已过期</span>' +
+        '<div class="acc-sub mt">仅影响积分读取</div>';
     }
 
-    // ④ 凭据 / 模型：AK 指纹从独立一列收进这里的小字
-    const marks = '<span class="num">' + a.credentialCount + " / " + a.modelCount + "</span>" +
-      (a.keyFingerprint
-        ? '<div class="acc-sub mt" title="AK 指纹 ' + esc(a.keyFingerprint) + '">AK ' + esc(a.keyFingerprint) + "</div>"
-        : "");
+    // ⑤ 模型 / 凭据：把「1 / 24」这种没头没尾的比值换成人话
+    const marks = '<div class="num">' + (a.modelCount || 0) + " 个模型</div>" +
+      '<div class="acc-sub mt" title="' + esc(a.keyFingerprint ? "AK 指纹 " + a.keyFingerprint : "") + '">' +
+      (a.credentialCount || 0) + " 条凭据" + (a.keyFingerprint ? " · AK " + esc(a.keyFingerprint) : "") + "</div>";
 
-    // ⑤ 来源：这条记录是从哪几个文件拼出来的（挂在账号下面，一行放不下就折行）
-    const badges = a.sources && a.sources.length
-      ? '<div class="acc-src">' + a.sources.map((s) => '<span class="tag">' + esc(s) + "</span>").join("") + "</div>"
-      : "";
+    // ⑥ 操作：主操作跟着状态走 —— 临期给「续期」，失效给「重新登录」，
+    //    正常才给「测活」。四个按钮同权时，用户反而不知道该按哪个。
+    let primary;
+    if (s.key === "soon") {
+      primary = '<button class="mini" data-ac="renew" data-id="' + esc(a.id) + '">续期</button>';
+    } else if (s.key === "dead") {
+      primary = '<button class="mini" data-ac="auth" data-id="' + esc(a.id) + '">重新登录</button>';
+    } else if (s.key === "off") {
+      primary = '<button class="mini" data-ac="toggle" data-id="' + esc(a.id) + '">启用</button>';
+    } else {
+      primary = '<button class="ghost mini" data-ac="test" data-id="' + esc(a.id) + '">测活</button>';
+    }
+    const ops = '<div class="ops">' + primary +
+      '<button class="ghost mini" data-ac="rename" data-id="' + esc(a.id) + '">改名</button>' +
+      (s.key === "off" ? "" : '<button class="ghost mini" data-ac="toggle" data-id="' + esc(a.id) + '">' + (a.enabled ? "停用" : "启用") + "</button>") +
+      '<button class="ghost mini danger" data-ac="remove" data-id="' + esc(a.id) + '">删除</button></div>';
 
-    return [identity + badges, status, creditCell, leftCell, marks, ops];
+    return [identity, status, creditCell, leftCell, marks, ops];
   });
 
   $("#acBody").innerHTML = tbl(
     [
-      { t: "账号", w: "320px" },
-      { t: "状态", w: "128px" },
-      { t: "剩余积分", w: "200px" },
-      { t: "凭据剩余", w: "126px" },
-      { t: "凭据 / 模型", w: "146px" },
-      { t: "操作", w: "240px", c: "ctr" },
+      { t: "账号", w: "250px" },
+      { t: "状态", w: "190px" },
+      { t: "剩余积分", w: "175px" },
+      { t: "凭据剩余", w: "115px" },
+      { t: "模型 / 凭据", w: "125px" },
+      { t: "操作", w: "210px", c: "ctr" },
     ],
     rows,
     { cls: "t-acc" }
@@ -2331,6 +2711,10 @@ function bindCreditEvents() {
 }
 
 async function acAct(kind, id) {
+  // 续期复用积分那边的 crRenew（它自己会 poll）；登录直接切到「配置 → 授权」。
+  // 这两个不是普通行内操作，不该混进下面的 try 里当同一种东西处理。
+  if (kind === "renew") return crRenew(id);
+  if (kind === "auth") { location.hash = "#auth"; return; }
   const a = accounts().find((x) => x.id === id);
   try {
     if (kind === "test") {
@@ -2399,6 +2783,40 @@ function bindAccountAuthEvents() {
   if (acBody) acBody.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-ac]");
     if (b) acAct(b.dataset.ac, b.dataset.id);
+  });
+  if (acBody) acBody.addEventListener("change", (e) => {
+    const cb = e.target.closest("input[data-pick]");
+    if (!cb) return;
+    if (cb.checked) acSel.add(cb.dataset.pick);
+    else acSel.delete(cb.dataset.pick);
+    renderAccounts();
+  });
+
+  const acBatch = $("#acBatch");
+  if (acBatch) acBatch.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-batch]");
+    if (b) acBatchAct(b.dataset.batch);
+  });
+
+  // 搜索 / 筛选放在表格外面，轮询重绘 tbody 时不会把输入框和焦点一起换掉
+  const acQEl = $("#acQ");
+  if (acQEl) acQEl.addEventListener("input", () => { acQ = acQEl.value; renderAccounts(); });
+
+  const acSeg = $("#acSeg");
+  if (acSeg) acSeg.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-f]");
+    if (!b) return;
+    acFilter = b.dataset.f;
+    $$("#acSeg button").forEach((x) => x.classList.toggle("on", x === b));
+    renderAccounts();
+  });
+
+  const acAlert = $("#acAlert");
+  if (acAlert) acAlert.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-alert]");
+    if (!b) return;
+    if (b.dataset.alert === "renew") crRenew(null);
+    else location.hash = "#auth";
   });
 
   const igList = $("#igList");
@@ -2784,15 +3202,16 @@ async function saveRegCfg() {
 
 /**
  * 菜单分组：一个菜单项可以装好几块内容。
- * 12 个独立页面太碎了，按「你实际要看什么」合并成 7 项 ——
+ * 12 个独立页面太碎了，按「你实际要看什么」合并成 8 项 ——
  * 号池和凭据池是一件事，用量和调用记录是一件事，模型和测试台是一件事。
  */
 const GROUPS = {
+  overview: ["overview"],            // 概览 = 一屏体检 + 最近调用
   accounts: ["accounts", "creds"],   // 账号池 = 账号 + 凭据
   usage: ["usage", "calls"],         // 用量   = 统计 + 调用记录
   credits: ["credits"],              // 积分构成
   models: ["models", "play"],        // 模型与档位 = 模型列表 + 测试台
-  access: ["access", "overview"],    // 接入信息 = 怎么接 + 概览
+  access: ["access"],                // 接入信息 = 怎么接
   logs: ["logs"],
   settings: ["settings", "auth"],    // 配置 = 设置 + 授权/注册
 };
@@ -2825,7 +3244,7 @@ function go(p) {
   renderAll();
   window.scrollTo({ top: 0 });
 }
-window.addEventListener("hashchange", () => go((location.hash || "#accounts").slice(1)));
+window.addEventListener("hashchange", () => go((location.hash || "#overview").slice(1)));
 
 /* 只接管站内 hash 链接（#nav 里的外链，比如「福利站导航」，要能正常跳出去） */
 $$('#nav a[href^="#"]').forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); location.hash = a.getAttribute("href"); }));
@@ -2932,7 +3351,7 @@ $("#cfgSave").onclick = saveSettings;
 $("#cfgReload").onclick = () => { cfgDirty = false; renderSettings(); toast("已从内存重载"); };
 
 /* ---------------- 启动 ---------------- */
-go((location.hash || "#accounts").slice(1));
+go((location.hash || "#overview").slice(1));
 bindAccountAuthEvents();
 bindCreditEvents();
 poll();

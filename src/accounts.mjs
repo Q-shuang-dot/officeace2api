@@ -1194,10 +1194,18 @@ export function evaluateHealth(acc) {
   }
   if (exp) {
     const left = exp - now;
-    const h = Math.floor(left / 3600000);
+    // 余量只有 55 分钟时，`Math.floor(left / 3600000)` 会得到 0 ——
+    // 界面上就变成「已自动续期 / 凭据剩 0 小时」，和旁边「55 分」的倒计时自相矛盾。
+    // 一分钟以下按分钟说，别把不足一小时的余量抹成 0。
+    const mins = Math.max(0, Math.round(left / 60000));
+    const h = Math.floor(mins / 60);
+    const leftText =
+      h >= 24 ? `${Math.floor(h / 24)} 天 ${h % 24} 小时`
+        : h > 0 ? `${h} 小时${mins % 60 ? ` ${mins % 60} 分` : ''}`
+          : `${mins} 分`;
     // 续期换回来的凭据要标出来：不然看档案上的旧时间会以为早就该过期了
-    if (acc.profile?.refreshed) return { state: 'ok', label: '已自动续期', detail: `凭据剩 ${h} 小时` };
-    return { state: 'ok', label: '有效', detail: `剩 ${h} 小时` };
+    if (acc.profile?.refreshed) return { state: 'ok', label: '已自动续期', detail: `凭据剩 ${leftText}` };
+    return { state: 'ok', label: '有效', detail: `剩 ${leftText}` };
   }
   return { state: 'unknown', label: '未知', detail: '拿不到过期时间（安装密钥解不开）' };
 }

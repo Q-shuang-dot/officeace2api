@@ -1057,14 +1057,18 @@ export class QuotaService {
     }
   }
 
-  /** 批量签到：号池里所有启用且凭据可用的号 */
-  async claimAll({ force = false } = {}) {
+  /** 批量签到指定账号：跳过停用/今天已签的，其它逐个签 */
+  async claimMany(ids, { force = false } = {}) {
     const out = [];
     let gained = 0;
-    for (const id of this.accounts.ids()) {
+    for (const id of ids) {
       const acc = this.accounts.get(id);
-      if (!acc?.enabled) {
-        out.push({ id, label: acc?.label || '', ok: false, skipped: true, error: '账号已停用' });
+      if (!acc) {
+        out.push({ id, label: '', ok: false, error: '账号不存在' });
+        continue;
+      }
+      if (!acc.enabled) {
+        out.push({ id, label: acc.label || '', ok: false, skipped: true, error: '账号已停用' });
         continue;
       }
       if (!force && this.claimedToday(id)) {
@@ -1076,6 +1080,10 @@ export class QuotaService {
       out.push({ id, label: acc.label || '', ...r });
     }
     return { ok: out.every((r) => r.ok || r.skipped), results: out, gained: round2(gained) };
+  }
+
+  async claimAll({ force = false } = {}) {
+    return this.claimMany(this.accounts.ids(), { force });
   }
 
   /* ---- 带缓存与并发合并的单账号查询 ---- */

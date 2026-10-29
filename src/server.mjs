@@ -1467,6 +1467,8 @@ export function createApp(ctx) {
             defaultModel: registry.defaultModel(),
             version: ctx.version,
             startedAt: new Date(ctx.startedAt).toISOString(),
+            // 面板据此判断能不能一次提交多个 id（旧版服务端只认单个 id / 全部）
+            batchActions: true,
             // 目录里有、但打不通的模型。两个来源合并：
             //   ① 主动探测（开机后台跑一遍，写进 data/model-probe.json）
             //   ② 学习到的（某条模型被池里所有凭据拒过）
@@ -1776,10 +1778,13 @@ export function createApp(ctx) {
       if (pathname === '/admin/api/credits/claim' && req.method === 'POST') {
         if (!ctx.credits) return sendJson(res, 200, { ok: false, error: '积分模块未启用' });
         const body = await readJson(req).catch(() => ({}));
-        const targetIds = body.id ? [String(body.id)] : ctx.accounts.ids().filter((i) => ctx.accounts.get(i)?.enabled);
+        const ids = body.id ? [String(body.id)] : Array.isArray(body.ids) && body.ids.length ? body.ids.map(String) : null;
+        const targetIds = ids || ctx.accounts.ids().filter((i) => ctx.accounts.get(i)?.enabled);
         const r = body.id
           ? await ctx.credits.claimBonus(String(body.id), { force: body.force === true })
-          : await ctx.credits.claimAll({ force: body.force === true });
+          : ids
+            ? await ctx.credits.claimMany(ids, { force: body.force === true })
+            : await ctx.credits.claimAll({ force: body.force === true });
         // 签到把缓存清了，这里补刷一次，否则返回的汇总全是 0
         await ctx.credits.refresh(targetIds, { force: true }).catch(() => {});
         sendJson(res, 200, { ...r, ...ctx.credits.view() });
@@ -1791,7 +1796,11 @@ export function createApp(ctx) {
         if (!ctx.credits) return sendJson(res, 200, { ok: false, error: '积分模块未启用' });
         const body = await readJson(req).catch(() => ({}));
         const force = body.force === true;
-        const ids = body.id ? [String(body.id)] : ctx.accounts.ids();
+        const ids = body.id
+          ? [String(body.id)]
+          : Array.isArray(body.ids) && body.ids.length
+            ? body.ids.map(String)
+            : ctx.accounts.ids();
         const results = [];
         for (const id of ids) {
           const acc = ctx.accounts.get(id);

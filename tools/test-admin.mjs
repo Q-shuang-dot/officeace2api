@@ -1123,8 +1123,8 @@ console.log('\n[刷新与统计]');
   const navKeys = [...html.matchAll(/data-p="([a-z-]+)"/g)].map((m) => m[1]);
   const pageIds = [...html.matchAll(/id="p-([a-z-]+)"/g)].map((m) => m[1]);
 
-  if (navKeys.length === 7) ok('面板：菜单是 7 项（12 个页面已合并）');
-  else bad('面板：菜单是 7 项（12 个页面已合并）', `实际 ${navKeys.length}: ${navKeys.join(',')}`);
+  if (navKeys.length === 8) ok('面板：菜单是 8 项（12 个页面已合并）');
+  else bad('面板：菜单是 8 项（12 个页面已合并）', `实际 ${navKeys.length}: ${navKeys.join(',')}`);
 
   if (new Set(navKeys).size === navKeys.length) ok('面板：菜单没有重复项');
   else bad('面板：菜单没有重复项', navKeys.join(','));
@@ -1139,8 +1139,8 @@ console.log('\n[刷新与统计]');
     }
   }
   const groupKeys = Object.keys(groups);
-  if (groupKeys.length === 7) ok('面板：GROUPS 定义了 7 个菜单');
-  else bad('面板：GROUPS 定义了 7 个菜单', groupKeys.join(','));
+  if (groupKeys.length === 8) ok('面板：GROUPS 定义了 8 个菜单');
+  else bad('面板：GROUPS 定义了 8 个菜单', groupKeys.join(','));
 
   const missingNav = groupKeys.filter((g) => !navKeys.includes(g));
   if (missingNav.length === 0) ok('面板：每个分组都有对应的菜单项');

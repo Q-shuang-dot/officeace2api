@@ -26,6 +26,7 @@ jobs:
           node tools/test-pool-scheduler.mjs
           node tools/test-pool-persistence.mjs
           node tools/test-usage-cache.mjs
+          node tools/test-usage-daily.mjs
           node tools/test-routing.mjs
           node tools/test-http-utils.mjs
           node tools/test-stream-e2e.mjs
