@@ -775,7 +775,7 @@ export function createApp(ctx) {
         pool.markFailed(cred, message);
         lastError = message;
         lastStatus = 502;
-        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, error: message });
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, accountId: cred.accountId, error: message });
         log.warn('上游连接失败', {
           seq,
           rid,
@@ -808,7 +808,7 @@ export function createApp(ctx) {
                 : 502;
         attempts.push({
           attempt: attemptNo,
-          cred: cred.baseUrl,
+          cred: cred.baseUrl, accountId: cred.accountId,
           status: upstreamRes.status,
           code: info.code,
           error: info.message,
@@ -825,6 +825,24 @@ export function createApp(ctx) {
                 ? `池里 ${av.cooled} 条凭据都拒绝过这个模型`
                 : '上游拒绝了这个模型';
             log.warn('这个模型在当前号池里没有可用的凭据', { model, cooled: av.cooled });
+            // 这个分支在重试循环里直接 return，必须自己记一条，
+            // 否则面板只看到「没有调用记录」，反而不知道模型被整池拒绝了。
+            usage.record({
+              model,
+              apiKey,
+              usage: null,
+              ok: false,
+              status: 400,
+              errorCode: 'model_not_available',
+              latencyMs: Date.now() - startedAt,
+              stream: wantStream,
+              endpoint,
+              credential: cred.baseUrl,
+              accountId: cred.accountId,
+              requestId: rid,
+              error: `${hint}：${info.message}`,
+              attempts,
+            });
             return openAiError(`${hint}：${info.message}`, {
               status: 400,
               type: 'invalid_request_error',
@@ -842,11 +860,27 @@ export function createApp(ctx) {
         } else if (info.requestTooLarge) {
           // 请求体太大是**确定性**的：body 不变，换个号、换个时间都一样被拒。
           // 而且重试要把整个 body 再传一遍（实测那次 5.5MB），纯属烧带宽。
-          // 连"记一笔失败"都不做 —— 这不是凭据的错。
+          // 不罚凭据，但要在用量里留一条 413 —— 否则客户端报错时面板完全查不到。
           log.warn('请求超过上游上限（messages 条数太多），直接回给客户端，不再重试', {
             model,
             code: info.code,
             message: info.message,
+          });
+          usage.record({
+            model,
+            apiKey,
+            usage: null,
+            ok: false,
+            status: 413,
+            errorCode: 'request_too_large',
+            latencyMs: Date.now() - startedAt,
+            stream: wantStream,
+            endpoint,
+            credential: cred.baseUrl,
+            accountId: cred.accountId,
+            requestId: rid,
+            error: info.message,
+            attempts,
           });
           return openAiError(
             `${info.message}（这个请求的对话历史太长了：上游对 messages 条数有上限` +
@@ -908,7 +942,7 @@ export function createApp(ctx) {
         pool.markFailed(cred, message);
         lastError = message;
         lastStatus = 502;
-        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, error: message });
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, accountId: cred.accountId, error: message });
         log.warn('上游首包读取失败', {
           seq,
           rid,
@@ -929,7 +963,7 @@ export function createApp(ctx) {
         // 请求体太大是确定性的，重试只会把整个 body 再传一遍（实测 5.5MB），
         // 所以这一档也不重试 —— 状态码给 413，让客户端知道该清历史了。
         lastStatus = info.requestTooLarge ? 413 : info.rateLimited ? 429 : 502;
-        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: info.code, error: info.message });
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, accountId: cred.accountId, code: info.code, error: info.message });
         if (info.requestTooLarge) {
           // 上游有时会用 HTTP 200 包着错误体回（这一段就是兜这种情况）。
           // 请求体太大是确定性的，重试只会再传一遍整个 body。
@@ -985,10 +1019,14 @@ export function createApp(ctx) {
             usage: result.usage,
             ok: false,
             error: info.message,
+            errorCode: info.code,
+            status: 200,
             latencyMs: Date.now() - startedAt,
             stream: true,
             endpoint,
             credential: cred.baseUrl,
+            accountId: cred.accountId,
+            requestId: rid,
           });
           log.warn('流式过程中上游返回错误体', {
             model,
@@ -1011,10 +1049,14 @@ export function createApp(ctx) {
             usage: result.usage,
             ok: false,
             error: msg,
+            errorCode: 'UPSTREAM_TRUNCATED',
+            status: 200,
             latencyMs: Date.now() - startedAt,
             stream: true,
             endpoint,
             credential: cred.baseUrl,
+            accountId: cred.accountId,
+            requestId: rid,
           });
           log.warn('上游中途断流', {
             seq,
@@ -1035,10 +1077,13 @@ export function createApp(ctx) {
           apiKey,
           usage: result.usage,
           ok: true,
+          status: 200,
           latencyMs: Date.now() - startedAt,
           stream: true,
           endpoint,
           credential: cred.baseUrl,
+          accountId: cred.accountId,
+          requestId: rid,
         });
         const endedAt = Date.now();
         log.info(
@@ -1121,7 +1166,7 @@ export function createApp(ctx) {
         const info = classifyUpstream(200, JSON.stringify(aggFailure));
         lastError = info.message;
         lastStatus = info.rateLimited ? 429 : 502;
-        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: info.code, error: info.message });
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, accountId: cred.accountId, code: info.code, error: info.message });
         if (info.rateLimited) pool.markRateLimited(cred, model, info.message);
         else if (!info.badRequest) pool.markFailed(cred, info.message);
         else log.info('上游流内 4xx 请求错误，不计入账号熔断', { model, code: info.code, message: info.message });
@@ -1200,7 +1245,7 @@ export function createApp(ctx) {
           maxTokensBefore: sentBefore,
           maxTokensRetry: emptyRetryMaxTokens,
         });
-        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, code: 'EMPTY_CONTENT_RETRY', error: `推理用掉 ${rt} token，没留下正文` });
+        attempts.push({ attempt: attemptNo, cred: cred.baseUrl, accountId: cred.accountId, code: 'EMPTY_CONTENT_RETRY', error: `推理用掉 ${rt} token，没留下正文` });
         // 不算这条凭据的错，标记 ok。
         // ⚠️ 这里**不能**用 markModelUsable：这次是"空正文"，它只证明
         // 凭据没坏，不证明模型列得出来（探测黑名单不该被它撤销）。
@@ -1217,10 +1262,13 @@ export function createApp(ctx) {
         apiKey,
         usage: payload.usage,
         ok: true,
+        status: 200,
         latencyMs: Date.now() - startedAt,
         stream: false,
         endpoint,
         credential: cred.baseUrl,
+        accountId: cred.accountId,
+        requestId: rid,
       });
       log.info(
         formatChatLine({
@@ -1269,6 +1317,9 @@ export function createApp(ctx) {
       return null;
     }
 
+    // 最后一次尝试的摘要就是客户端最终看到的错误来源；把它和整串 attempts
+    // 一起落进 recent，面板才能解释“为什么失败、换号后有没有变化”。
+    const lastAttempt = attempts.length ? attempts[attempts.length - 1] : null;
     usage.record({
       model,
       apiKey,
@@ -1278,6 +1329,12 @@ export function createApp(ctx) {
       stream: wantStream,
       endpoint,
       error: lastError || 'all attempts failed',
+      errorCode: lastAttempt?.code || '',
+      status: lastStatus,
+      credential: lastAttempt?.cred || '',
+      accountId: lastAttempt?.accountId || '',
+      requestId: rid,
+      attempts,
     });
 
     const type =

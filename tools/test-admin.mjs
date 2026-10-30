@@ -1115,7 +1115,7 @@ console.log('\n[刷新与统计]');
 }
 
 {
-  // 面板结构：菜单合并成 7 项之后，菜单 / 分组 / 页面容器三者必须对得上。
+  // 面板结构：菜单合并成 8 项之后，菜单 / 分组 / 页面容器三者必须对得上。
   // 这类错误只在浏览器里点出来，静态测一遍能省很多次「页面白屏」的排查。
   const fs = await import('node:fs');
   const html = fs.readFileSync(new URL('../src/admin.html', import.meta.url), 'utf8');
@@ -1257,6 +1257,21 @@ console.log('\n[刷新与统计]');
   // #mdlUnavail 这个容器本身得存在，否则上面那块代码永远不执行
   if (ids.has('mdlUnavail')) ok('面板：#mdlUnavail 容器存在');
   else bad('面板：#mdlUnavail 容器存在', '缺 id="mdlUnavail"');
+
+  // 账号 × 模型矩阵：容器、渲染函数和 renderModels 里的调用必须三件齐全。
+  // 少任何一件都会静默变成空白区块，没有任何运行时报错。
+  if (ids.has('mdlMatrix') && ids.has('mdlMatrixSub')) ok('面板：账号×模型矩阵容器存在');
+  else bad('面板：账号×模型矩阵容器存在', '缺 #mdlMatrix / #mdlMatrixSub');
+  if (/function renderModelMatrix\(\)/.test(html) && /renderModelMatrix\(\)/.test(html)) {
+    ok('面板：账号×模型矩阵有渲染函数且被调用');
+  } else {
+    bad('面板：账号×模型矩阵有渲染函数且被调用');
+  }
+  if (ids.has('callBody') && /function callErrorCell\(r\)/.test(html) && /data-diag/.test(html)) {
+    ok('面板：失败调用诊断列和复制诊断按钮存在');
+  } else {
+    bad('面板：失败调用诊断列和复制诊断按钮存在');
+  }
 }
 
 {

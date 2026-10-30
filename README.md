@@ -44,11 +44,11 @@ Continue、Cursor、Dify、沉浸式翻译、OpenAI SDK……
 
 | 菜单 | 干什么 |
 |---|---|
-| **概览** | 一屏看运行状态、剩余积分、今日签到和最近调用 |
+| **概览** | 一屏看运行状态、剩余积分、今日签到和最近调用（失败调用直接显示原因） |
 | **账号池** | 多账号的凭据、剩余积分、健康度一览；批量续期 / 签到 / 停用；**导出凭证**（换电脑用）/ 导入 |
-| **用量** | 请求数、token 消耗、近 7 天走势、失败原因分类，按模型 / 按 API Key 分组 |
+| **用量** | 请求数、token 消耗、近 7 天走势、失败原因分类；调用记录带错误码、请求 ID 和重试链，可复制诊断 |
 | **积分构成** | 每个账号还剩多少积分 —— 直接问云端，不是估算 |
-| **模型与档位** | 模型清单、别名、隐藏、手工补录；自带测试台 |
+| **模型与档位** | 模型清单、别名、隐藏、手工补录；**账号 × 模型可用性矩阵**；自带测试台 |
 | **接入信息** | 各种客户端该填什么，一键复制 JSON / .env / curl |
 | **运行日志** | 实时日志，按级别过滤 |
 | **配置** | 改端口、API Key、上游、刷新间隔，存回 `config.json` |
@@ -411,7 +411,9 @@ officeace2api/
 - `node tools/test-pool-persistence.mjs` —— 号池状态持久化与熔断（21 项：5xx 连败熔断 /
   指数退避 / 429 退避 / 跨实例恢复冷却与黏性 / 状态文件不含密钥 / 损坏与过期状态兜底）
 - `node tools/test-usage-cache.mjs` —— 缓存 token 统计（5 项）
-- `node tools/test-admin.mjs` —— 控制台接口自测（284 项，含配置卫生：死配置检测、
+- `node tools/test-call-diagnostics.mjs` —— 失败调用诊断字段（9 项：请求 ID / 错误码 /
+  HTTP 状态 / 重试链 / 落盘后仍可读）
+- `node tools/test-admin.mjs` —— 控制台接口自测（含配置卫生：死配置检测、
   日志时间用本机时区、周期发现只在变化时说话、面板轮询后台停打、口令换 Cookie、
   上游错误体装在 SSE 帧里也要能解析出 `code`/`message`、面板载荷不许把 `usage.recent`
   整份重复装一遍、日志增量接口只回新行）
@@ -451,7 +453,7 @@ officeace2api/
 - `node tools/diag-body-too-large.mjs` —— 超大请求体应该回 413 而不是 429
 - `node tools/diag-admin-auth.mjs` —— 核对面板鉴权（不带 / 对 / 错口令，以及 ?token= 那条路）
 - `node tools/diag-portability.mjs` —— 看 data/ 里的凭据形态（判断能不能拷贝给别人）
-- `node tools/diag-local-daily.mjs` —— **本机日常自用体检**：七个菜单的真实接口 + 面板调的路径是否都存在
+- `node tools/diag-local-daily.mjs` —— **本机日常自用体检**：八个菜单的真实接口 + 面板调的路径是否都存在
 - `node tools/diag-panel-api.mjs` —— **把面板的 `api()` 抠出来真跑**（验 `{json:{…}}` 和 `{json:true, body}` 两种写法）
 - `node tools/diag-fresh-clone.mjs` —— **模拟别人 clone 下来**：只拷 git 跟踪的文件到干净目录起服务
 - `node tools/diag-ghost-accounts.mjs` —— 证明 `labels` 不会造出"幽灵账号"

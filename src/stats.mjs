@@ -26,7 +26,8 @@ export function classifyUsageError(message = '') {
   if (s.includes('abort') || s.includes('取消')) return '客户端取消';
   if (s.includes('429') || s.includes('rate limit') || s.includes('ratelimit') || s.includes('too many') || s.includes('限流')) return '限流 429';
   if (s.includes('401') || s.includes('unauthorized') || s.includes('invalid api key') || s.includes('鉴权')) return '鉴权失败';
-  if (s.includes('81004') || s.includes('模型没权限') || s.includes('model not authorized')) return '模型无权限';
+  if (s.includes('81004') || s.includes('81009') || s.includes('模型没权限') || s.includes('model not authorized') ||
+    s.includes('model_not_available') || s.includes('invalid model')) return '模型无权限';
   if (s.includes('403') || s.includes('forbidden') || s.includes('权限')) return '无权限 403';
   if (s.includes('81001') || s.includes('bad request') || s.includes('invalid request') || s.includes('参数')) return '请求参数';
   if (s.includes('502') || s.includes('503') || s.includes('504') || s.includes('bad gateway') || s.includes('unavailable')) return '上游 5xx';
@@ -66,7 +67,24 @@ export class UsageStore {
   }
 
   record(entry) {
-    const { model, apiKey, usage, ok, latencyMs, error, credential, stream, endpoint } = entry;
+    const {
+      model,
+      apiKey,
+      usage,
+      ok,
+      latencyMs,
+      error,
+      credential,
+      stream,
+      endpoint,
+      // 调用诊断字段：面板的「失败调用」要能回答“是哪次、哪个号、上游回了什么”。
+      // 这些都只是请求元数据，不含 Authorization / AK/SK。
+      requestId = '',
+      errorCode = '',
+      status = 0,
+      accountId = '',
+      attempts = [],
+    } = entry;
     // 上游各家字段名不一样：OpenAI 标准是 prompt_tokens_details.cached_tokens，
     // 也有直接给 usage.cached_tokens 的。拿不到就当 0，不影响原有统计。
     const cachedTokens = Number(
@@ -123,7 +141,27 @@ export class UsageStore {
       completion_tokens: usage?.completion_tokens ?? null,
       cached_tokens: cachedTokens,
       credential: credential || '',
+      accountId: accountId || '',
+      requestId: requestId || '',
+      errorCode: errorCode || '',
+      status: Number(status) || 0,
       error: error || '',
+      /*
+       * 只保留最后一次请求里最多 8 次尝试的摘要。
+       *
+       * 重试次数是可配置的，但面板要的是“第一次为什么失败、换号后有没有变化”，
+       * 不需要把整个请求体抄进来；这里的 error/credential 都只有短文本。
+       */
+      attempts: Array.isArray(attempts)
+        ? attempts.slice(-8).map((a) => ({
+            attempt: Number(a?.attempt) || 0,
+            credential: String(a?.credential || a?.cred || '').slice(0, 200),
+            accountId: String(a?.accountId || '').slice(0, 120),
+            status: Number(a?.status) || 0,
+            code: String(a?.code || '').slice(0, 80),
+            error: String(a?.error || '').slice(0, 500),
+          }))
+        : [],
     });
     if (this.data.recent.length > 200) this.data.recent.length = 200;
 

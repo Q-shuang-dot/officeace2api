@@ -56,6 +56,7 @@ check('429 归类', snap.errors['限流 429'], 1);
 check('网络错误归类', snap.errors['网络错误'], 1);
 check('超时归类函数', classifyUsageError('request ETIMEDOUT'), '超时');
 check('模型权限归类', classifyUsageError('ModelArts.81004'), '模型无权限');
+check('模型不存在/无权限归类', classifyUsageError('池里 3 条凭据都拒绝过这个模型：Invalid model.'), '模型无权限');
 check('参数错误归类', classifyUsageError('81001 bad request'), '请求参数');
 check('未知错误归类', classifyUsageError('some weird thing'), '其他');
 

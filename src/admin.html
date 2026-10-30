@@ -136,6 +136,32 @@ td.ctr,th.ctr{text-align:center}
 .ops{display:flex;gap:6px;flex-wrap:nowrap;justify-content:center}
 .ops button{flex:none}
 
+/* ---------- 账号 × 模型矩阵 ---------- */
+/* 列数会随账号增加，整表不折行并允许横向滚动；首列 sticky，滚动时还知道行是什么模型。 */
+.mx-table{width:max-content;min-width:100%}
+.mx-table th,.mx-table td{text-align:center;white-space:nowrap;padding:7px 10px;border-bottom:1px solid var(--line2)}
+.mx-table th:first-child,.mx-table td:first-child{text-align:left;position:sticky;left:0;z-index:1;background:var(--panel)}
+.mx-table thead th:first-child{z-index:3;background:var(--panel2)}
+.mx-table tbody tr:nth-child(even) td{background:var(--panel2)}
+.mx-table tbody tr:nth-child(even) td:first-child{background:var(--panel2)}
+.mx-table .mx-model{max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.mx{display:inline-block;min-width:54px;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;
+  border:1px solid var(--line);background:var(--panel2);color:var(--muted)}
+.mx.ok{color:var(--ok);border-color:var(--line-ok);background:var(--bg-ok)}
+.mx.warn{color:var(--warn);border-color:var(--line-warn);background:var(--bg-warn)}
+.mx.bad{color:var(--err);border-color:var(--line-err);background:var(--bg-err)}
+.mx.none{color:var(--dim);background:var(--panel2)}
+
+/* ---------- 失败调用诊断 ---------- */
+.call-err{display:flex;align-items:flex-start;gap:5px;flex-wrap:wrap;max-width:520px}
+.call-err .msg{color:var(--err);font-size:12px;line-height:1.45;word-break:break-word}
+.call-meta{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin-top:4px;font-size:11px;color:var(--dim)}
+.call-meta code{font-size:10.5px;color:var(--muted)}
+.call-attempts{margin-top:5px;font-size:11px;color:var(--muted)}
+.call-attempts summary{cursor:pointer;color:var(--accent)}
+.call-attempts div{padding:3px 0 3px 10px;border-left:2px solid var(--line);margin-top:3px;line-height:1.45;word-break:break-word}
+.call-attempts b{color:var(--fg);font-weight:600}
+
 code,pre{font-family:var(--mono)}
 code{font-size:12.5px;color:var(--code-fg);background:var(--code-bg);border:1px solid var(--line2);border-radius:5px;padding:.5px 5px}
 pre code{background:none;border:0;padding:0}
@@ -431,6 +457,16 @@ button.danger:hover{background:var(--bg-err);border-color:var(--err);color:var(-
           <button class="ghost mini" id="mdlRatesRefresh">刷新倍率</button>
           <span class="muted" style="font-size:12px" id="mdlRatesHint"></span>
         </div>
+      </div>
+    </section>
+    <section>
+      <h3>账号 × 模型可用性<span class="sp"></span><span class="muted" id="mdlMatrixSub"></span></h3>
+      <div class="body scroll short" id="mdlMatrix"></div>
+      <div class="body hint" style="border-top:1px solid var(--line);padding-top:10px">
+        <b>可用</b>：这个账号的凭据目录里有该模型，且没有被上游拒绝过；
+        <b>冷却</b>：最近被限流/上游故障，暂时不接这个模型；
+        <b>被拒</b>：上游明确说没权限或名字不认识（81004 / 81009）；
+        <b>未覆盖</b>：这个账号的模型目录里没有它，不代表一定不能打，可点「重探一遍」。
       </div>
     </section>
     <section>
@@ -1053,10 +1089,15 @@ function renderOverview() {
   const cs = creditsState(), sm = cs.summary || {};
   const okRate = t.requests ? Math.round((t.ok / t.requests) * 100) : null;
   const up = S.health.uptimeMs || 0;
+  const unavail = new Set((S.health && S.health.modelsUnavailable) || []);
+  const badModels = S.models.filter((m) => unavail.has(m.id)).length;
+  const usableModels = Math.max(0, S.models.length - badModels);
   $("#ovSub").textContent = "已运行 " + Math.floor(up / 3600000) + " 小时 " + Math.floor(up / 60000) % 60 + " 分";
   $("#ovCards").innerHTML = [
     ["凭据", S.pool.length, S.pool.filter((c) => !c.cooldownMsLeft).length + " 条可用", S.pool.length ? "ok" : "err"],
-    ["可用模型", S.models.length, S.models.filter((m) => m.source === "alias").length + " 个别名", "ok"],
+    ["可用模型", usableModels, (badModels ? badModels + " 个打不通" : "全部可用") +
+      (S.models.filter((m) => m.source === "alias").length ? " · " + S.models.filter((m) => m.source === "alias").length + " 个别名" : ""),
+      badModels ? "warn" : "ok"],
     ["请求总数", num(t.requests || 0), "成功 " + num(t.ok || 0) + " / 失败 " + num(t.failed || 0), (t.failed ? "warn" : "ok")],
     ["成功率", okRate === null ? "—" : okRate + "%", okRate === null ? "还没有请求" : "全量统计", okRate === null ? "" : (okRate >= 95 ? "ok" : "warn")],
     ["剩余积分", fmtP(sm.remaining || 0), (sm.ok || 0) + " 个号读到" + (sm.failed ? " · " + sm.failed + " 个失败" : ""), sm.failed ? "warn" : "ok"],
@@ -1074,13 +1115,16 @@ function renderOverview() {
 
   const recent = (S.recent || []).slice(0, 12);
   $("#ovRecent").innerHTML = recent.length ? tbl(
-    ["时间", "模型", "结果", "耗时", "tokens"],
+    ["时间", "模型", "结果", "耗时", "tokens", "错误"],
     recent.map((r) => [
       '<span class="dim">' + esc(hhmmss(r.ts)) + "</span>",
       "<code>" + esc(r.model) + "</code>",
       r.ok ? '<span class="tag ok">OK</span>' : '<span class="tag err">FAIL</span>',
       '<span class="num">' + ms(r.latencyMs) + "</span>",
       '<span class="dim">' + num(r.prompt_tokens) + " / " + num(r.completion_tokens) + "</span>",
+      r.ok ? '<span class="dim">-</span>' :
+        '<span style="color:var(--err);font-size:11.5px" title="' + esc(r.error || "") + '">' +
+          esc(cutText(r.error || r.errorCode || "未知错误", 46)) + "</span>",
     ])
   ) : empty("还没有调用记录");
 }
@@ -1503,6 +1547,8 @@ function renderModels() {
     toast("已填入目标模型，再填写左侧客户端模型名即可");
   }));
 
+  renderModelMatrix();
+
   const alias = S.config.models.alias || {};
   const entries = Object.entries(alias);
   $("#aliasList").innerHTML = entries.length ? tbl(["客户端模型名", "实际模型", ""],
@@ -1512,6 +1558,104 @@ function renderModels() {
     delete a[b.dataset.rmalias];
     await saveModels({ alias: a });
   }));
+}
+
+/**
+ * 账号 × 模型可用性矩阵。
+ *
+ * 数据全部来自 state 里已有的 pool / accounts，不额外打接口：
+ *   - pool[].models        这份凭据的模型目录（或已经成功打过的模型）
+ *   - pool[].rejectedModels 上游明确拒绝过的模型（81004 / 81009）
+ *   - pool[].modelCooldowns 正在冷却的「凭据 × 模型」
+ * 同一账号可能有多条凭据，只要有一条没被拒绝，就显示「可用」。
+ */
+function renderModelMatrix() {
+  const box = $("#mdlMatrix");
+  if (!box) return;
+  const q = ($("#mdlFilter").value || "").toLowerCase();
+  const models = (S.models || []).filter((m) =>
+    m.source !== "alias" && (!q || m.id.toLowerCase().includes(q) || String(m.developer || "").toLowerCase().includes(q)));
+  const unavail = new Set((S.health && S.health.modelsUnavailable) || []);
+
+  const byId = new Map();
+  for (const a of accounts()) {
+    byId.set(String(a.id), {
+      id: String(a.id),
+      label: a.label || a.short || a.userName || a.id,
+      enabled: a.enabled !== false,
+    });
+  }
+  // 号池里可能有账号列表还没同步到的条目；矩阵宁可多显示一列，也不要把它藏起来。
+  for (const c of (S.pool || [])) {
+    const id = String(c.accountId || c.userId || "");
+    if (!id || byId.has(id)) continue;
+    byId.set(id, { id, label: c.userId || c.accountId || id, enabled: true });
+  }
+  const cols = [...byId.values()];
+
+  const state = new Map();
+  for (const c of (S.pool || [])) {
+    const id = String(c.accountId || c.userId || "");
+    if (!id) continue;
+    const rec = state.get(id) || { listed: new Set(), available: new Set(), rejected: new Set(), cooling: new Map() };
+    const rejected = new Set(c.rejectedModels || []);
+    for (const model of (c.models || [])) {
+      rec.listed.add(model);
+      if (rejected.has(model)) rec.rejected.add(model);
+      else rec.available.add(model);
+    }
+    for (const model of rejected) rec.rejected.add(model);
+    for (const x of (c.modelCooldowns || [])) {
+      if (x && x.model) rec.cooling.set(x.model, Number(x.msLeft) || 0);
+    }
+    state.set(id, rec);
+  }
+
+  let usable = 0;
+  const rows = models.map((m) => {
+    const cells = cols.map((a) => {
+      const rec = state.get(a.id);
+      if (!rec) return '<span class="mx none">未入池</span>';
+      // 主动探测说全局打不通时，不把目录里列着当成「可用」——
+      // 否则矩阵会跟上面的「打不通 11 个」自相矛盾。
+      if (unavail.has(m.id)) {
+        return '<span class="mx bad" title="' + esc("主动探测 / 学习结果：这个模型在当前号池里打不通") + '">打不通</span>';
+      }
+      if (rec.available.has(m.id)) {
+        usable += 1;
+        const left = rec.cooling.get(m.id) || 0;
+        if (left > 0) {
+          return '<span class="mx warn" title="' + esc("这个号 × 模型正在冷却，约 " + Math.ceil(left / 1000) + " 秒后恢复") + '">冷却</span>';
+        }
+        return '<span class="mx ok">可用</span>';
+      }
+      if (rec.rejected.has(m.id)) {
+        return '<span class="mx bad" title="' + esc("上游明确拒绝过这个模型（没权限 / 名字不认）") + '">被拒</span>';
+      }
+      return '<span class="mx none" title="' + esc("这个账号的模型目录里没有它，不代表一定不能打") + '">未覆盖</span>';
+    });
+    const mark = unavail.has(m.id) ? "⚠ " : "";
+    return [
+      '<span class="mx-model" title="' + esc(m.id + (unavail.has(m.id) ? " · 全局探测打不通" : "")) + '">' +
+        mark + "<code>" + esc(m.id) + "</code></span>",
+      ...cells,
+    ];
+  });
+
+  $("#mdlMatrixSub").textContent = cols.length
+    ? cols.length + " 个账号 · " + models.length + " 个模型" + (q ? "（筛选后）" : "") + " · 可用组合 " + usable
+    : "还没有账号";
+  box.innerHTML = !cols.length
+    ? empty("还没有账号，先到账号池导入或登录")
+    : models.length
+      ? tbl(
+          ["模型", ...cols.map((a) =>
+            '<span title="' + esc(a.id + (a.enabled ? "" : " · 已停用")) + '">' +
+            esc(cutText(a.label, 20)) + (a.enabled ? "" : ' <span class="tag">停用</span>') + "</span>")],
+          rows,
+          { cls: "mx-table" },
+        )
+      : empty("没有匹配的模型");
 }
 
 async function quickTest(btn, model) {
@@ -1662,23 +1806,88 @@ function renderUsage() {
 }
 
 /* ---------------- 调用记录 ---------------- */
+
+/** 调用记录里显示账号别名；找不到就退回短 ID，绝不显示密钥。 */
+function callAccount(r) {
+  const id = String(r.accountId || "");
+  const a = accounts().find((x) => String(x.id) === id);
+  const name = a ? (a.label || a.short || a.userName || a.id) : (id ? midId(id, 8, 6) : "");
+  const base = (r.credential || "").replace(/^https?:\/\//, "").replace(/\/v2\/?$/, "");
+  return {
+    name: name || "-",
+    detail: base || "-",
+  };
+}
+
+/**
+ * 失败调用单元格：错误码 + 请求 ID + 重试链 + 复制诊断。
+ *
+ * 以前这里只有一坨红色 error 文本，看到 FAIL 也不知道是哪个环节。
+ * `attempts` 是服务端这次请求真实换过的凭据，按顺序展开即可还原重试过程。
+ */
+function callErrorCell(r) {
+  if (r.ok) return '<span class="dim">-</span>';
+  const code = r.errorCode ? '<span class="tag err">' + esc(r.errorCode) + "</span>" : "";
+  const rid = r.requestId ? '<code title="请求 ID">' + esc(r.requestId) + "</code>" : "";
+  const status = r.status
+    ? '<span class="pill">' + (r.status === 200 && !r.ok ? "流内错误" : "HTTP " + esc(r.status)) + "</span>"
+    : "";
+  const attempts = Array.isArray(r.attempts) ? r.attempts : [];
+  const attemptHtml = attempts.length
+    ? '<details class="call-attempts"><summary>尝试 ' + attempts.length + " 次</summary>" +
+      attempts.map((a) =>
+        "<div><b>#" + esc(a.attempt || "?") + "</b> " +
+        (a.status ? esc(a.status) + " " : "") +
+        (a.code ? "<code>" + esc(a.code) + "</code> " : "") +
+        esc(cutText(a.error || "", 180)) +
+        "</div>").join("") +
+      "</details>"
+    : "";
+  return '<div class="call-err"><span class="msg" title="' + esc(r.error || "") + '">' +
+    esc(cutText(r.error || "未知错误", 220)) + "</span></div>" +
+    '<div class="call-meta">' + code + status + rid +
+    '<button class="ghost mini" data-diag="' + esc(JSON.stringify({
+      ts: r.ts,
+      model: r.model,
+      endpoint: r.endpoint,
+      ok: r.ok,
+      stream: r.stream,
+      status: r.status,
+      errorCode: r.errorCode,
+      requestId: r.requestId,
+      accountId: r.accountId,
+      credential: r.credential,
+      latencyMs: r.latencyMs,
+      error: r.error,
+      attempts,
+    })) + '">复制诊断</button></div>' + attemptHtml;
+}
+
 function renderCalls() {
   let list = S.recent || [];
   if (callFilter === "ok") list = list.filter((r) => r.ok);
   if (callFilter === "fail") list = list.filter((r) => !r.ok);
   $("#callBody").innerHTML = list.length ? tbl(
-    ["时间", "模型", "端点", "结果", "耗时", "输入 / 输出", "上游", "错误"],
-    list.map((r) => [
-      '<span class="dim">' + esc(new Date(r.ts).toLocaleTimeString("zh-CN")) + "</span>",
-      "<code>" + esc(r.model) + "</code>",
-      '<span class="dim" style="font-size:11.5px">' + esc(r.endpoint || "-") + "</span>",
-      (r.ok ? '<span class="tag ok">OK</span>' : '<span class="tag err">FAIL</span>') + (r.stream ? '<span class="tag">流</span>' : ""),
-      '<span class="num">' + ms(r.latencyMs) + "</span>",
-      '<span class="num dim">' + num(r.prompt_tokens) + " / " + num(r.completion_tokens) + "</span>",
-      '<span class="dim" style="font-size:11.5px">' + esc((r.credential || "").replace(/^https?:\/\//, "").slice(0, 34)) + "</span>",
-      '<span style="color:var(--err);font-size:12px">' + esc(r.error || "") + "</span>",
-    ])
+    ["时间", "模型", "端点", "结果", "耗时", "输入 / 输出", "账号 / 凭据", "错误 / 诊断"],
+    list.map((r) => {
+      const acct = callAccount(r);
+      return [
+        '<span class="dim">' + esc(new Date(r.ts).toLocaleTimeString("zh-CN")) + "</span>",
+        "<code>" + esc(r.model) + "</code>",
+        '<span class="dim" style="font-size:11.5px">' + esc(r.endpoint || "-") + "</span>",
+        (r.ok ? '<span class="tag ok">OK</span>' : '<span class="tag err">FAIL</span>') + (r.stream ? '<span class="tag">流</span>' : ""),
+        '<span class="num">' + ms(r.latencyMs) + "</span>",
+        '<span class="num dim">' + num(r.prompt_tokens) + " / " + num(r.completion_tokens) + "</span>",
+        '<div style="font-size:12px">' + esc(acct.name) + '</div>' +
+          '<div class="dim" style="font-size:10.5px;max-width:180px;overflow:hidden;text-overflow:ellipsis" title="' +
+          esc(acct.detail) + '">' + esc(acct.detail) + "</div>",
+        callErrorCell(r),
+      ];
+    })
   ) : empty("没有记录");
+  $$("#callBody [data-diag]").forEach((b) => {
+    b.onclick = () => copy(b.dataset.diag, "诊断信息已复制（不含密钥）");
+  });
 }
 
 /* ---------------- 日志 ---------------- */
@@ -1841,6 +2050,13 @@ function midId(s, headN, tailN) {
   return t.length > h + n + 1 ? t.slice(0, h) + "…" + t.slice(-n) : t;
 }
 function empty(t) { return '<div class="empty">' + esc(t) + "</div>"; }
+
+/** 诊断文本只留一个屏幕能看的长度，完整内容挂 title / 复制诊断里。 */
+function cutText(s, n) {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  const max = n || 120;
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
+}
 function swSet(sel, on) { $(sel).classList.toggle("on", !!on); }
 function swGet(sel) { return $(sel).classList.contains("on"); }
 
