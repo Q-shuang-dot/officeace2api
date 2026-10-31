@@ -170,7 +170,7 @@ function upstreamHeaders(credential, { stream = true, extraHeaders = {} } = {}) 
   return {
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
-    'User-Agent': 'OfficeAce/1.0 (officeace2api)',
+    'User-Agent': 'AsyncOpenAI/Python 3.33.0',
     ...credential.headers,
     ...extraHeaders,
   };
